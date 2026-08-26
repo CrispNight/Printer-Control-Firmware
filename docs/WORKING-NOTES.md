@@ -28,40 +28,45 @@ notes:
 
 Read this table first. The detail is below; each heading carries its state.
 
+**Where things stand:** protocol version 2 landed in `3abc782`. Everything
+decided in this document is now expressed in `protocol.h` and `PROTOCOL.md`.
+Almost none of it is *implemented in firmware* yet - that is the whole of the
+remaining work, and it is collected in section 18.
+
 | State | Meaning |
 |---|---|
-| `[DONE]` | implemented and committed - the detail here is history |
-| `[QUEUED]` | decided, waiting on the version 2 change (section 18) |
+| `[DONE]` | finished - the detail here is history |
+| `[FIRMWARE]` | protocol side landed; firmware implementation outstanding |
+| `[OPEN]` | needs a decision or a bench measurement |
 | `[FACT]` | verified hardware or code truth; nothing to implement |
-| `[OPEN]` | genuinely unresolved, needs a measurement or a decision |
 | `[ELSEWHERE]` | belongs in the board or PC repo, not this one |
 | `[SUPERSEDED]` | kept only so the old conclusion does not mislead |
 
 | # | Section | State |
 |---|---|---|
 | 1 | Frame renamed to data packet | `[DONE]` |
-| 2 | Group vectors by laser parameters | `[QUEUED]` docs |
-| 3 | Buffer depth and power timing are one question | `[OPEN]` needs bench measurement |
-| 4 | Fractional position accumulation | `[QUEUED]` firmware |
-| 5 | Delay compensation is one signed number | `[QUEUED]` `MSG_TIMING_OFFSET` |
-| 6 | DMA-driven DAC, and the chip-select pin | `[FACT]` + `[ELSEWHERE]` board |
+| 2 | Group vectors by laser parameters | `[DONE]` |
+| 3 | Buffer depth and power timing are one question | `[OPEN]` + `[FIRMWARE]` |
+| 4 | Fractional position accumulation | `[FIRMWARE]` |
+| 5 | Delay compensation is one signed number | `[FIRMWARE]` |
+| 6 | DMA-driven DAC, and the chip-select pin | `[FACT]` `[ELSEWHERE]` |
 | 7 | The 100 kHz figure reconciled | `[FACT]` |
 | 8 | Where layer data lives | `[SUPERSEDED]` by section 19 |
 | 9 | Carried-over items from the port | `[OPEN]` three small follow-ups |
-| 10 | Verified Teensy 4.1 pin tables | `[FACT]` + `[ELSEWHERE]` board |
-| 11 | Two-head expansion, v0.2 pin checklist | `[ELSEWHERE]` board |
-| 12 | PSRAM is for job data | `[ELSEWHERE]` board |
-| 13 | CAN as the inter-board transport | `[QUEUED]` docs + `[ELSEWHERE]` board |
-| 14 | Recoat sequence | `[QUEUED]` struct + docs |
-| 15 | Field correction format and the silent bug | `[FACT]` + `[QUEUED]` messages |
-| 16 | The .cor files hold no distortion data | `[FACT]` + `[OPEN]` characterisation |
-| 17 | What the old handler revealed | `[FACT]` + `[QUEUED]` gaps |
-| 18 | **Version 2 checklist - the working queue** | - |
-| 19 | Job file on SD, and the print log | `[QUEUED]` |
+| 10 | Verified Teensy 4.1 pin tables | `[FACT]` `[ELSEWHERE]` |
+| 11 | Two-head expansion, v0.2 pin checklist | `[ELSEWHERE]` |
+| 12 | PSRAM is for job data | `[ELSEWHERE]` |
+| 13 | CAN as the inter-board transport | `[FIRMWARE]` + `[ELSEWHERE]` |
+| 14 | Recoat sequence | `[FIRMWARE]` |
+| 15 | Field correction format and the silent bug | `[FACT]` + `[FIRMWARE]` |
+| 16 | The .cor files hold no distortion data | `[FACT]` + `[OPEN]` |
+| 17 | What the old handler revealed | `[FACT]` + `[FIRMWARE]` |
+| 18 | **Firmware work queue** | - |
+| 19 | Job file on SD, and the print log | `[FIRMWARE]` |
 
 **Lifecycle:** when something is implemented it leaves this file. The decision
-lives in `PROTOCOL.md` or the code from then on, and its section here collapses
-to a one-line pointer. This document should shrink as work lands, not grow.
+lives in `PROTOCOL.md` or the code from then on, and its section collapses to a
+one-line pointer. This document should shrink as work lands, not grow.
 
 ---
 
@@ -75,7 +80,7 @@ encoded bytes before and after, so `PROTOCOL_VERSION` stayed at 1.
 "USB packet" (transport-specific, and CAN is now in the picture) and "Moiren
 packet" (the project name is wanted for higher-level things).
 
-## 2. Per-vector power — group by parameters, don't tag every point  `[QUEUED]`
+## 2. Per-vector power — group by parameters, don't tag every point  `[DONE]`
 
 The slicer exports a DXF stack; each vector carries its own speed and power in
 extended DXF data. Most vectors share values, and a curved contour holds
@@ -93,7 +98,7 @@ message regardless of vector count. No protocol change needed.
 The only case that would force per-point power is ramping power *within* a
 single vector. Not currently required — confirm before designing for it.
 
-## 3. Buffer depth and power timing are the same question  `[OPEN]`
+## 3. Buffer depth and power timing are the same question  `[OPEN]` `[FIRMWARE]`
 
 Total buffered time **is** the latency between deciding something and it
 reaching the galvo. Section count determines how much of that total is
@@ -136,7 +141,7 @@ reads, and the drift monitor. Changing the buffering during a port would mean
 changing two things at once. Make section count and size named constants first,
 then change buffering as its own step with the monitor watching.
 
-## 4. Fractional position accumulation  `[QUEUED]`
+## 4. Fractional position accumulation  `[FIRMWARE]`
 
 At 1000 mm/s and the 100 kHz target the galvo advances **3.75 counts per
 frame** — a fraction, not an integer.
@@ -153,7 +158,7 @@ The interpolator must carry sub-count precision and round only at output.
 Stepping in whole counts gives stair-stepping at speed and stalling when slow.
 Easy to get wrong, cheap to get right first time.
 
-## 5. Delay compensation — one signed number, not several  `[QUEUED]`
+## 5. Delay compensation — one signed number, not several  `[FIRMWARE]`
 
 There are unknown latencies on both paths: Teensy → analog voltage at the laser
 power input, and Teensy → mirror actually moving. Neither is well characterised.
@@ -425,7 +430,7 @@ marking path — the SD slot becomes a *loading* mechanism rather than a
 real-time one, which is a much easier thing to get right.
 
 
-## 13. CAN as the inter-board transport  `[QUEUED]` `[ELSEWHERE]`
+## 13. CAN as the inter-board transport  `[FIRMWARE]` `[ELSEWHERE]`
 
 UART over 1-2 m in a machine with steppers, a fibre laser and pumps is a poor
 bet. The ESP32 in particular has to sit within inches of the airflow sensor
@@ -492,7 +497,7 @@ controllers with a 3.3 V transceiver instead.
 Check the crystal on any MCP2515 module - they ship with 8 MHz or 16 MHz, and
 the bit-timing registers differ. Wrong value looks like a dead bus.
 
-## 14. Recoat sequence  `[QUEUED]`
+## 14. Recoat sequence  `[FIRMWARE]`
 
 Confirmed with the machine owner on 2026-08-26. Order matters and the struct
 alone does not convey it, so it belongs in `PROTOCOL.md`.
@@ -554,7 +559,7 @@ message.
 Commanding the recoater to an arbitrary absolute position already works via
 `MSG_AXIS_MOVE` with `AXIS_WIPE`.
 
-## 15. Field correction table - format, and the bug to avoid  `[FACT]` `[QUEUED]`
+## 15. Field correction table - format, and the bug to avoid  `[FACT]` `[FIRMWARE]`
 
 Distinct from the timing offset (section 5). This one is **spatial**: a 65 x 65
 grid of position offsets correcting f-theta lens distortion. Recalculated
@@ -792,7 +797,7 @@ in the old repo - it may already fit a table from measured points, and would be
 better reused than reinvented.
 
 
-## 17. What the old PC handler and Mega firmware revealed  `[FACT]` `[QUEUED]`
+## 17. What the old PC handler and Mega firmware revealed  `[FACT]` `[FIRMWARE]`
 
 Read 2026-08-26: `Laser_controller_and_arduino/Arduino_HandlerV2.py` (the PC to
 Arduino command layer) and the command parser in `Arduino_Trimmed_Program.ino`.
@@ -899,66 +904,63 @@ numbers and acks make it structurally impossible.
 | No re-home policy | interval expressible, and schedulable during a mark |
 | `valid_mask` cannot express "overridden" | add an override mask, and report the true reading alongside the substituted one |
 
-## 18. Version 2 checklist - the working queue
+## 18. Firmware work queue
 
-One place to work from. `protocol.h` and `PROTOCOL.md` are at version 1.
+Protocol version 1 shipped in `a383eaa`; version 2 in `7e53d55` (rename) and
+`3abc782` (semantics). **The protocol is done. None of it is implemented.**
 
-### Commit A - mechanical rename  `[DONE]`
+### Porting constraints - fix these while porting, not after
 
-Landed as `d8b41b4`. See section 1.
+These are structural. Retro-fitting any of them means rewriting the code that
+was built without them.
 
-### Commit B - semantic changes, bump to version 2  `[QUEUED]`
-
-**New messages**
-
-| Message | Purpose | Section |
+| # | Constraint | Why |
 |---|---|---|
-| `MSG_TIMING_OFFSET` | laser lead/lag in samples, default 0 | 5 |
-| `MSG_FIELD_CORRECTION_BEGIN` / `_DATA` / `_END` | atomic 65x65 table upload, carries field scale and whole-table CRC | 15 |
-| `MSG_LIGHT_SET` | `ambient` / `shadow` / `off` plus settle delay | 17 |
-| `MSG_SENSOR_OVERRIDE` | which channels are overridden, substituted **and** true values; sent on connect and on change, not every report | 17 |
-| `MSG_JOB_UPLOAD_BEGIN` / `_DATA` / `_END` | write a job file to the microSD card | 19 |
+| P1 | **Motion must be non-blocking** | The old code sits in `while (distanceToGo()) { run(); }`. During a move the Mega reads no sensors, checks no interlocks and cannot receive `MSG_ESTOP`. Handling estop "first in every handler" is meaningless while the loop is blocked. |
+| P2 | **Never drain and discard the input buffer** | `sendSensorData()` ended by reading and throwing away everything pending, silently dropping any command that arrived during a report. Delete that loop; feed every byte to the decoder. |
+| P3 | **Position authority lives on the Mega** | The PC held `build_cur` / `supply_cur` and sent absolute targets, so the machine could not run without it. The Mega must track position itself and publish `axis_status_t`. |
+| P4 | **SD reads in the main loop, never in the DMA refill ISR** | Filesystem access from interrupt context is a non-starter. The ISR consumes from a RAM ring; the main loop keeps it fed. |
 
-**Removed**
+### Arduino Mega - the largest piece, still a skeleton
 
-- `MSG_MARK_BATCH` - jobs now live on the card. Uploading and printing are
-  separate operations, so no single message both carries vectors and fires the
-  laser. `MSG_JOB_START` names a job on the card; `MSG_MARK_ABORT` stays.
+| Item | Notes | Section |
+|---|---|---|
+| Wire to the protocol | replaces the `CMD\|...` text protocol entirely | - |
+| Motion, restructured non-blocking | feed/bed/wipe, homing, limits (P1) | 17 |
+| Position tracking and `axis_status_t` | (P3) | 17 |
+| Recoat cycle with park modes | order matters; the Mega owns the whole cycle | 14 |
+| Anti-backlash approach direction | real mechanical compensation, not superstition | 17 |
+| Sensors: O2, thermistors, validity | carry the pin comments across verbatim | 17 |
+| Safety: observe the hardware interlock chain | inputs, not outputs - firmware must not be able to defeat it | 17 |
+| Chamber lighting, three modes | `MSG_LIGHT_SET` | 17 |
+| `MSG_SENSOR_OVERRIDE` reporting | compile-time override, loudly visible | 17 |
+| Airflow: blower PWM, argon solenoid | radiator fan defined but unwired | 17 |
+| Periodic wiper re-homing | can run during a mark once P1 is done | 17 |
 
-**Struct changes**
+### Teensy - ported and building, speaks no protocol yet
 
-- `recoat_cycle_t`: park mode (`PARK_OVERFLOW` / `PARK_SUPPLY` / `PARK_STAGED`),
-  clearance drop, settle time (default 2000 ms).
-- `axis_move_t`: approach-direction flag for anti-backlash.
-- `fan_set_t` / `fan_status_t`: address chamber blower and radiator fan
-  separately. The radiator fan is not currently wired (section 17).
-- Axis enum: reserve `AXIS_BLADE_LIFT` while it is free.
+| Item | Notes | Section |
+|---|---|---|
+| Wire to the protocol | keep the console; `0xA5` never appears in typed text, so both share the port | - |
+| Buffer depth as named constants | one-line experiment instead of surgery | 3 |
+| Fractional position accumulation | sub-count precision, round at output | 4 |
+| Field correction: load and decode | sign-magnitude decoded once, at load | 15 |
+| Field correction: bilinear + cell caching | ~270 samples share a cell; shifts, not division | 15 |
+| Field scale from the file, not a constant | with the 33-300 mm sanity band | 15 |
+| `MSG_TIMING_OFFSET` applied | pre-shift power during refill | 5 |
+| Job upload to SD, atomic commit | `MSG_JOB_UPLOAD_*` | 19 |
+| Job streaming with per-layer CRC at read | ~8192-point vector buffer (P4) | 19 |
+| Print log | 512-record ring, flush in the dwell | 19 |
+| Job sequencer | the state machine that drives a print | - |
 
-**Documentation**
+### Later
 
-- Redraw the current-versus-target wiring diagram with **CAN**, not UART.
-- Per-transport framing: USB serial versus CAN (section 13).
-- Recoat sequence order, and that the Mega owns the whole cycle (section 14).
-- Group vectors by laser parameters rather than per-point power (section 2).
-- Job file structure and SD streaming (section 19).
-- Field scale sanity band: **33 mm to 300 mm**, roughly **218-1986 counts/mm**.
-  A header scale of exactly `1.0` is the known placeholder - flag it loudly,
-  propose the conversion implied by the table ramp, and re-check the result
-  against the band rather than silently accepting or silently fixing.
+- **CAN transport** once transceivers are fitted - per-transport framing is
+  documented but not written (section 13).
+- **ESP32 airflow node** - the hardware does not exist yet.
+- **Bench measurements** that unblock section 3 and section 16.
 
-Then bump `PROTOCOL_VERSION` to 2, regenerate, extend `tools/test_protocol.py`.
-Run `gen_protocol.py --check`, not just the test script - the test prints the
-*stored* hash and will pass on a stale generated file.
-
-### Not protocol - porting constraints for the firmware  `[QUEUED]`
-
-- **Motion must be non-blocking.** Prerequisite for `MSG_ESTOP`, for live
-  interlock checks during moves, and for re-homing the wiper during a mark.
-- **Never drain and discard the input buffer** (section 17).
-- **Position authority lives on the Mega**, not the host.
-- **SD reads happen in the main loop, never in the DMA refill ISR.**
-
-## 19. Job file on SD, and the print log  `[QUEUED]`
+## 19. Job file on SD, and the print log  `[FIRMWARE]`
 
 The printer must run a job with no PC attached, so **the job lives on the
 Teensy's microSD card**. The PC uploads it once; printing reads from the card.
