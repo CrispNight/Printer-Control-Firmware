@@ -952,17 +952,58 @@ knowing before touching that board:
   needs `MSG_FAULT_CLEAR`; an open door clears itself when the door shuts,
   otherwise a clear would be needed after every powder load.
 
+The three-stage argon purge moved onto the board as part of this. It had been
+living in the PC controller (`purge_system()` in `LaserController.py`) and takes
+up to ~40 minutes, so a machine that is supposed to run unattended could not
+have it there. Stage order is physical - displace without stirring, then mix,
+then shut the valve and prove it holds - and is documented in `PROTOCOL.md`.
+
 Still open on the Mega, and none of it blocks a print:
 
-- The fan tach on pin 20 is wired but not counted, so `fan_status_t.rpm` is 0.
-- `FAN_MODE_MAPPED` is refused. The map from scan speed lived here when the
-  Mega drove the marking; it no longer sees scan speed at all. Where that
-  mapping should live is an open question - see section 17.
-- Re-homing the wiper **during** a mark is still not possible: the Mega has no
-  way to know a mark is running. It is folded into the recoat cycle instead.
-  Worth revisiting once the Teensy sequencer is talking.
-- There is no "prepare the machine" message, so each axis is homed by its own
-  `MSG_AXIS_HOME`. Fine today, since only the wiper is homed.
+- **`FAN_MODE_MAPPED` has no owner.** It was specified from a verbal
+  description of a speed-to-fan map, but the PC never implemented one: it sends
+  two fixed levels, `BLOWER_PURGE_SPEED` (PWM 50) and `BLOWER_PRINT_SPEED`
+  (PWM 94). Both are Mega constants now. Either the mode gets a real definition
+  or it should be retired from the protocol - it is refused today.
+- **`MSG_RESET` is refused.** A watchdog reset is the only clean way to do it on
+  an AVR, and the stock Mega2560 bootloader does not reliably clear `WDRF`, so
+  the board can come up in a reset loop needing a manual reflash. Revisit only
+  if the bootloader is confirmed watchdog-safe.
+- **Argon consumption is measured but not reported.** The board knows how long
+  the solenoid was open; there is no protocol field to put it in.
+- **The fan tach is not counted**, so `fan_status_t.rpm` is 0. The machine owner
+  considers the radiator fan likely to be removed entirely, so this is not
+  worth building.
+- **Position is lost across a power cycle.** See below - this is the one that
+  actually matters.
+
+#### Position across a power cycle - open design question
+
+The pistons are never homed, so after a reboot the board has no idea where they
+are. Today software travel limits are simply skipped on an un-homed axis, which
+is safe but means bounds never apply to the bed or feed in practice. The old
+firmware solved the same problem by compiling in `BED_OVERRIDE`/`FEED_OVERRIDE`/
+`WIPE_OVERRIDE` as permanently true.
+
+The machine owner does not want to re-home on every restart and wants this
+changeable at runtime rather than by reflashing, with the access policy
+eventually living on the Teensy behind a user level. Proposed shape:
+
+1. **Persist position to EEPROM**, written when an axis has been idle a couple
+   of seconds and the value changed, wear-levelled across a ring of slots. At
+   ~1 write per axis per layer, a 64-slot ring is roughly 6000 thousand-layer
+   prints against the 100k-cycle endurance.
+2. **Three trust levels, not two:** unknown / restored-from-EEPROM / homed.
+   Bounds apply to restored as well as homed; only homed claims verification,
+   because nothing stops an axis being moved by hand while powered off. Needs a
+   new `AXIS_FLAG_POS_RESTORED` bit - which is what the UI would show as
+   "restored, not homed" per axis on startup.
+3. **A per-move bounds escape** (`AXIS_MOVE_NO_BOUNDS`) replacing the
+   compile-time override, so the mechanism is on the Mega and the policy is in
+   the message.
+
+Items 2 and 3 both add flag bits, so they are one `PROTOCOL_VERSION` bump to 3,
+not two.
 
 ### Teensy - ported and building, speaks no protocol yet
 

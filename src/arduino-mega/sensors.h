@@ -53,6 +53,14 @@ uint16_t oxygenWorstPpm();
  * TEMP_WARN_OFFSET_C_X10 of its limit but has not tripped yet. */
 uint16_t warnMask();
 
+/* A channel that is supposed to have a sensor on it has been reading
+ * implausibly for long enough to count as broken. Consume-once; returns the
+ * sensor_report_t.valid_mask bit index (0-1 oxygen, 8-13 temperature) or
+ * SENSOR_NONE. The unused thermistor channels can never appear here: they
+ * float or sit on a pull-down and read implausibly by design. */
+const uint8_t SENSOR_NONE = 0xFF;
+uint8_t consumeInvalidSensor();
+
 }  // namespace sensors
 
 #endif /* MEGA_SENSORS_H */

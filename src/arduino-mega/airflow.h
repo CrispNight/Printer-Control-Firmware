@@ -31,11 +31,29 @@ void service();
 uint8_t setFan(const fan_set_t &req);
 bool    fillStatus(uint8_t fan, fan_status_t &out);
 
+/* Starts the three-stage purge described in config.h, or aborts one when
+ * req.enable is 0. While it runs the purge OWNS the chamber blower, so a
+ * manual fan set on FAN_CHAMBER_BLOWER is answered ACK_BUSY rather than
+ * quietly fighting it. */
 uint8_t setPurge(const purge_set_t &req);
 bool    purging();
+uint8_t purgeStage();   /* purge_stage_t, for state reporting */
 
-/* Consume-once: the purge did not reach its target within timeout_s. */
-bool consumePurgeTimeout();
+enum purge_result_t {
+    PURGE_RESULT_NONE = 0,
+    PURGE_RESULT_PASSED,
+    PURGE_RESULT_FAILED,   /* O2 climbed back once the solenoid shut */
+};
+
+/* Consume-once. A failed purge does NOT stop anything: the old sequence logged
+ * it and carried on, and whether to print into a chamber that did not hold is
+ * a policy decision for the job sequencer, not for the board that owns the
+ * valve. It is reported so that decision can be made. */
+purge_result_t consumePurgeResult();
+
+/* Seconds the solenoid was open on the last purge. The PC used this to bill
+ * argon consumption; there is no protocol field for it yet. */
+uint16_t lastPurgeOpenSeconds();
 
 /* Everything off, valve closed. For MSG_ESTOP. */
 void allOff();

@@ -20,10 +20,43 @@ int16_t  temp_c_x10[NUM_TEMP_SENSORS];
 int16_t  temp_true_c_x10[NUM_TEMP_SENSORS];
 uint16_t valid_mask;
 uint16_t warn_mask;
+uint16_t fitted_mask;        /* the channels that are supposed to work */
+uint16_t invalid_since_ms[NUM_TEMP_SENSORS + NUM_OXYGEN_SENSORS];
+uint16_t reported_broken;    /* one fault per channel, not one per sample */
+uint8_t  broken_pending = SENSOR_NONE;
 bool     override_changed = true;   /* publish once on connect */
 
 uint8_t  next_channel;              /* 0..1 oxygen, 2..7 temperature */
 uint32_t last_sample_ms;
+
+/* Slot in invalid_since_ms[] for a valid_mask bit index. */
+uint8_t slotOf(uint8_t bit_index)
+{
+    return (bit_index < 8) ? bit_index : (uint8_t)(NUM_OXYGEN_SENSORS + (bit_index - 8));
+}
+
+void noteValid(uint8_t bit_index, uint16_t bit)
+{
+    invalid_since_ms[slotOf(bit_index)] = 0;
+    reported_broken &= (uint16_t)~bit;
+}
+
+void noteInvalid(uint8_t bit_index, uint16_t bit)
+{
+    if (!(fitted_mask & bit)) return;      /* never fitted; not a fault */
+    if (reported_broken & bit) return;     /* already reported once */
+
+    const uint8_t slot = slotOf(bit_index);
+    const uint16_t now = (uint16_t)millis();
+    if (invalid_since_ms[slot] == 0) {
+        invalid_since_ms[slot] = now ? now : 1;
+        return;
+    }
+    if ((uint16_t)(now - invalid_since_ms[slot]) < SENSOR_INVALID_FAULT_MS) return;
+
+    reported_broken |= bit;
+    if (broken_pending == SENSOR_NONE) broken_pending = bit_index;
+}
 
 uint16_t readOxygenPpm(uint8_t i)
 {
@@ -42,7 +75,10 @@ void sampleOxygen(uint8_t i)
 
     valid_mask |= bitOxygen(i);
 
-    /* Into the interlock chain: LOW asserts "oxygen is above the threshold". */
+    /* Into the interlock chain: LOW asserts "oxygen is above the threshold".
+     * Note this uses the REPORTED value, so an override feeds the chain too —
+     * which is the whole point of being able to work with a dead sensor, and
+     * exactly why MSG_SENSOR_OVERRIDE exists to make it visible. */
     digitalWrite(PIN_OXYGEN_DIG[i], (oxy_ppm[i] >= OXYGEN_THRESHOLD_PPM) ? LOW : HIGH);
 }
 
@@ -63,9 +99,11 @@ void sampleTemperature(uint8_t i)
                             raw_x10 <= TEMP_MAX_PLAUSIBLE_C_X10);
     if (!plausible) {
         valid_mask &= (uint16_t)~bitTemp(i);
+        noteInvalid((uint8_t)(8 + i), bitTemp(i));
         return;
     }
     valid_mask |= bitTemp(i);
+    noteValid((uint8_t)(8 + i), bitTemp(i));
 
     temp_true_c_x10[i] = raw_x10;
     if (SENSOR_TEST_MODE) {
@@ -106,6 +144,11 @@ void begin()
     }
     valid_mask = 0;
     warn_mask = 0;
+    fitted_mask = (uint16_t)(OXYGEN_FITTED_MASK | ((uint16_t)TEMP_FITTED_MASK << 8));
+    reported_broken = 0;
+    broken_pending = SENSOR_NONE;
+    for (uint8_t i = 0; i < NUM_TEMP_SENSORS + NUM_OXYGEN_SENSORS; i++)
+        invalid_since_ms[i] = 0;
     next_channel = 0;
     last_sample_ms = millis();
 }
@@ -177,5 +220,12 @@ uint16_t oxygenWorstPpm()
 }
 
 uint16_t warnMask() { return warn_mask; }
+
+uint8_t consumeInvalidSensor()
+{
+    const uint8_t s = broken_pending;
+    broken_pending = SENSOR_NONE;
+    return s;
+}
 
 }  // namespace sensors

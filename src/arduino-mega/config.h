@@ -54,8 +54,7 @@ static const bool USE_ENABLE_PIN = false;
 
 /* --- ADC ----------------------------------------------------------------- */
 
-static const float    ADC_VREF = 5.0f;
-static const uint16_t ADC_MAX  = 1023;
+static const uint16_t ADC_MAX = 1023;
 
 /* --- Oxygen -------------------------------------------------------------- */
 
@@ -81,6 +80,18 @@ static const float TEMP_TRIM_C[6] = {0.0f, 12.0f, -2.5f, 0.0f, 0.0f, 0.0f};
  * sensor_report_t.valid_mask. */
 static const int16_t TEMP_MIN_PLAUSIBLE_C_X10 = -400;
 static const int16_t TEMP_MAX_PLAUSIBLE_C_X10 = 1200;
+
+/* Which thermistor channels actually have a sensor on them. Only these can be
+ * "broken": the unused channels float or sit on a pull-down and read
+ * implausibly by design, so faulting on them would fire constantly.
+ * Bit per channel, matching sensor_report_t.valid_mask bits 8..13.
+ * Fitted today: 1 = A3 (S2, bed), 2 = A4 (S4, laser). */
+static const uint8_t TEMP_FITTED_MASK   = 0x06;
+static const uint8_t OXYGEN_FITTED_MASK = 0x03;
+
+/* A fitted channel has to read implausibly for this long before it counts as
+ * broken, so one noisy conversion does not raise a fault. */
+static const uint16_t SENSOR_INVALID_FAULT_MS = 3000;
 
 static const int16_t TEMP_LIMIT_C_X10[6]   = {350, 350, 350, 350, 350, 350};
 static const int16_t TEMP_WARN_OFFSET_C_X10 = -50;  /* warn this far below the limit */
@@ -171,8 +182,32 @@ static const uint16_t LIGHT_SETTLE_DEFAULT_MS[3] = {0, 1500, 1000};
 
 /* --- Purge --------------------------------------------------------------- */
 
-/* Hysteresis so the solenoid does not chatter around the target. */
-static const uint16_t PURGE_HYSTERESIS_PPM = 500;
+/* The argon purge is three stages, and the order is physical rather than
+ * arbitrary. Argon is heavier than air, so stage 1 lets it displace the air by
+ * pressure with the blower OFF - stirring at that point would only mix the two
+ * back together. Stage 2 then turns the blower on to homogenise what is left.
+ * Stage 3 shuts the solenoid and holds, to prove the chamber actually seals
+ * rather than merely reaching the number while gas is still flowing in.
+ *
+ * Carried across from the PC-side purge_system(); these were its constants.
+ * The whole thing takes up to ~40 minutes, which is exactly why it must not
+ * depend on a host staying connected. */
+static const uint16_t PURGE_STAGE1_S        = 480;   /* displace: 5+ min, blower off */
+static const uint16_t PURGE_STAGE2_MIN_S    = 60;    /* mix at least this long before the target can end it */
+static const uint16_t PURGE_STAGE2_TIMEOUT_S = 1800; /* then move on regardless */
+static const uint16_t PURGE_STAGE3_S        = 30;    /* verification hold */
+
+static const uint16_t PURGE_TARGET_DEFAULT_PPM = 3000;  /* 0.30 % — stage 2 aim */
+
+/* Stage 3 fails if O2 climbs back to target + this while the solenoid is shut.
+ * The PC used a fixed 0.5 % against a 0.3 % target; expressing it as a margin
+ * keeps the pair consistent when the target is changed in the message. */
+static const uint16_t PURGE_HOLD_MARGIN_PPM = 2000;
+
+/* Blower duty during and after a purge, per-mille. The PC sent raw PWM: 50 and
+ * 94 of 255. */
+static const uint16_t BLOWER_PURGE_DUTY_PM = 196;  /* PWM 50/255 */
+static const uint16_t BLOWER_PRINT_DUTY_PM = 369;  /* PWM 94/255 */
 
 /* --- Service pacing ------------------------------------------------------ */
 

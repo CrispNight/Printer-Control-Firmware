@@ -66,6 +66,11 @@ uint32_t last_sensor_report_ms;
 uint32_t last_safety_report_ms;
 uint32_t last_axis_report_ms;
 uint16_t last_warn_mask;
+uint16_t last_tripped_mask;
+uint16_t last_link_errors;
+
+/* Report link errors every this many, rather than every one. */
+const uint16_t LINK_ERROR_REPORT_STEP = 16;
 
 /* A command whose ACK is owed once the work it started completes. */
 struct pending_t {
@@ -111,6 +116,17 @@ void sendFault(uint8_t code, uint16_t detail, uint16_t bit)
     link.sendStruct(NODE_BROADCAST, MSG_FAULT, f, FLAG_IS_ERROR);
 }
 
+/* A fault worth naming that does not need clearing: it goes away when its
+ * cause does. */
+void sendLiveFault(uint8_t code, uint16_t detail)
+{
+    fault_report_t f;
+    f.code   = code;
+    f.node   = NODE_ARDUINO_MEGA;
+    f.detail = detail;
+    link.sendStruct(NODE_BROADCAST, MSG_FAULT, f, FLAG_IS_ERROR);
+}
+
 void sendHello(uint8_t dst)
 {
     sys_hello_t hello;
@@ -130,6 +146,9 @@ void sendState(uint8_t dst)
     memset(&state, 0, sizeof(state));
     state.state       = machine_state;
     state.fault_flags = fault_flags;
+    /* Which of the three purge stages is running — the whole sequence can take
+     * ~40 minutes, so "purging" on its own is not much of an answer. */
+    if (machine_state == STATE_PURGING) state.substate = airflow::purgeStage();
     link.sendStruct(dst, MSG_STATE, state, FLAG_IS_RESPONSE);
 }
 
@@ -188,7 +207,12 @@ void updateState()
         machine_state = STATE_PURGING;
         return;
     }
-    machine_state = (safety::allClear() &&
+    /* STATE_READY is "homed and purged, will accept a job" — so the chamber
+     * has to actually be inert, not merely not-faulted. With the O2 override
+     * on this is trivially satisfied, which is reported as an override rather
+     * than hidden. */
+    const bool inert = sensors::oxygenWorstPpm() <= OXYGEN_THRESHOLD_PPM;
+    machine_state = (safety::allClear() && inert &&
                      (motion::statusFlags(AXIS_WIPE) & AXIS_FLAG_HOMED))
                         ? STATE_READY
                         : STATE_IDLE;
@@ -325,6 +349,16 @@ void onPacket(const packet_t &packet, void *)
         break;
     }
 
+    case MSG_RESET:
+        /* Refused, with a reason. A watchdog reset is the only clean way to
+         * do this on an AVR, and the stock Mega2560 bootloader does not
+         * reliably clear WDRF on entry — the board can come up in a reset
+         * loop that needs a manual reflash to escape. That is not a risk
+         * worth taking on a machine that may be mid-print. Revisit if the
+         * bootloader is confirmed watchdog-safe. */
+        link.sendAck(packet, ACK_REFUSED);
+        break;
+
     case MSG_FAULT_CLEAR:
         /* FAULTBIT_ESTOP is not clearable over the link — it needs a physical
          * reset — and a fault whose cause is still present comes straight
@@ -437,8 +471,41 @@ void serviceFaults()
         }
     }
 
-    if (airflow::consumePurgeTimeout())
-        sendFault(FAULT_OXYGEN_HIGH, 0, FAULTBIT_OXYGEN);
+    /* A purge that did not hold is reported but does not latch: whether to
+     * print into a chamber that failed verification is the job sequencer's
+     * call, not the board's. STATE_READY already refuses to appear while the
+     * chamber is above the threshold, which is the gate that matters. */
+    const airflow::purge_result_t purge = airflow::consumePurgeResult();
+    if (purge == airflow::PURGE_RESULT_FAILED) {
+        sendLiveFault(FAULT_OXYGEN_HIGH, sensors::oxygenWorstPpm());
+        link.sendLog(NODE_BROADCAST, LOG_WARN, "purge did not hold");
+    } else if (purge == airflow::PURGE_RESULT_PASSED) {
+        link.sendLog(NODE_BROADCAST, LOG_INFO, "purge verified");
+    }
+
+    const uint8_t dead = sensors::consumeInvalidSensor();
+    if (dead != sensors::SENSOR_NONE)
+        sendFault(FAULT_SENSOR_INVALID, dead, FAULTBIT_TEMP);
+
+    /* The interlock picture is already published as safety_status_t, but a
+     * fresh trip also gets a fault code so a listener does not have to diff
+     * two status messages to notice one. Live, not latched — it clears itself
+     * when the door shuts. */
+    const uint16_t tripped = safety::trippedMask();
+    const uint16_t newly = (uint16_t)(tripped & ~last_tripped_mask);
+    last_tripped_mask = tripped;
+    if (newly & FAULTBIT_DOOR)   sendLiveFault(FAULT_DOOR_OPEN, 0);
+    if (newly & FAULTBIT_TEMP)   sendLiveFault(FAULT_OVERTEMP, 0);
+    if (newly & FAULTBIT_OXYGEN) sendLiveFault(FAULT_OXYGEN_HIGH, 0);
+
+    /* Link errors are diagnostic, not a machine fault: a noisy cable should
+     * not need a MSG_FAULT_CLEAR to get out of. Reported in batches so a bad
+     * connection cannot flood the link it is already struggling with. */
+    const uint16_t errs = (uint16_t)(link.crcErrors() + link.protoErrors());
+    if ((uint16_t)(errs - last_link_errors) >= LINK_ERROR_REPORT_STEP) {
+        last_link_errors = errs;
+        sendLiveFault(FAULT_PROTOCOL_ERROR, errs);
+    }
 
     const uint16_t warn = sensors::warnMask();
     if (warn != last_warn_mask) {
@@ -530,9 +597,13 @@ void setup()
     last_heartbeat_ms = last_sensor_report_ms = last_safety_report_ms = last_axis_report_ms = now;
     last_warn_mask = 0;
 
+    last_tripped_mask = safety::trippedMask();
+    last_link_errors = 0;
+
     machine_state = STATE_IDLE;
     sendHello(NODE_BROADCAST);
     sendOverride(NODE_BROADCAST);
+    sensors::consumeOverrideChanged();   /* just sent it; do not repeat on tick 1 */
 }
 
 void loop()

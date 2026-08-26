@@ -20,13 +20,22 @@ fan_t fans[2] = {
     {PIN_FAN_PWM,    FAN_MODE_OFF, 0},  /* FAN_RADIATOR */
 };
 
-bool     purge_enabled;
+/* Stages of the argon purge. See config.h for why the order is what it is. */
+enum purge_stage_t {
+    PURGE_IDLE = 0,
+    PURGE_DISPLACE,  /* solenoid open, blower OFF — argon displaces air */
+    PURGE_MIX,       /* solenoid open, blower on  — homogenise */
+    PURGE_VERIFY,    /* solenoid shut, blower on  — prove it holds */
+};
+
+uint8_t  purge_stage;
 bool     valve_open;
 uint16_t purge_target_ppm;
 uint16_t purge_timeout_s;
-uint32_t purge_start_ms;
-bool     purge_reached;
-bool     purge_timed_out;
+uint32_t purge_start_ms;      /* of the whole purge, for argon accounting */
+uint32_t stage_start_ms;
+uint16_t purge_open_s;
+purge_result_t purge_result;
 
 uint8_t dutyToPwm(uint16_t duty_pm)
 {
@@ -37,6 +46,52 @@ uint8_t dutyToPwm(uint16_t duty_pm)
 void applyFan(fan_t &f)
 {
     analogWrite(f.pin, (f.mode == FAN_MODE_MANUAL) ? dutyToPwm(f.duty_pm) : 0);
+}
+
+void enterStage(uint8_t stage);
+void setValve(bool open);
+
+/* The purge drives the blower directly, without disturbing the mode a caller
+ * set — so when the purge finishes, a later FAN_MODE_MANUAL still means what
+ * it said. */
+void setBlowerDuty(uint16_t duty_pm)
+{
+    fans[FAN_CHAMBER_BLOWER].duty_pm = duty_pm;
+    fans[FAN_CHAMBER_BLOWER].mode = duty_pm ? FAN_MODE_MANUAL : FAN_MODE_OFF;
+    analogWrite(fans[FAN_CHAMBER_BLOWER].pin, dutyToPwm(duty_pm));
+}
+
+void enterStage(uint8_t stage)
+{
+    purge_stage = stage;
+    stage_start_ms = millis();
+
+    switch (stage) {
+    case PURGE_DISPLACE:
+        setValve(true);
+        setBlowerDuty(0);          /* stirring now would only remix the air */
+        break;
+    case PURGE_MIX:
+        setValve(true);
+        setBlowerDuty(BLOWER_PURGE_DUTY_PM);
+        break;
+    case PURGE_VERIFY:
+        purge_open_s = (uint16_t)((millis() - purge_start_ms) / 1000UL);
+        setValve(false);
+        /* The blower keeps running through the hold, as the old sequence did
+         * — its docstring said otherwise but its code never turned it off. */
+        break;
+    default:
+        setValve(false);
+        setBlowerDuty(BLOWER_PRINT_DUTY_PM);
+        purge_stage = PURGE_IDLE;
+        break;
+    }
+}
+
+bool stageElapsed(uint16_t seconds)
+{
+    return (millis() - stage_start_ms) >= (uint32_t)seconds * 1000UL;
 }
 
 void setValve(bool open)
@@ -62,45 +117,55 @@ void begin()
     // TODO: Tach input — PIN_FAN_TACH is wired but not yet read; fan_status_t
     // reports rpm 0 until attachInterrupt() + a pulse counter land here.
 
-    purge_enabled = false;
+    purge_stage = PURGE_IDLE;
     valve_open = false;
     purge_target_ppm = 0;
     purge_timeout_s = 0;
-    purge_reached = false;
-    purge_timed_out = false;
+    purge_open_s = 0;
+    purge_result = PURGE_RESULT_NONE;
 }
 
 void service()
 {
-    if (!purge_enabled) return;
-
-    /* target_o2_ppm of 0 means "just hold the valve open"; there is nothing to
-     * close the loop against. */
-    if (purge_target_ppm == 0) return;
+    if (purge_stage == PURGE_IDLE) return;
 
     const uint16_t o2 = sensors::oxygenWorstPpm();
 
-    if (!purge_reached) {
-        if (o2 <= purge_target_ppm) {
-            purge_reached = true;
-            setValve(false);
+    switch (purge_stage) {
+    case PURGE_DISPLACE:
+        if (stageElapsed(PURGE_STAGE1_S)) enterStage(PURGE_MIX);
+        return;
+
+    case PURGE_MIX:
+        /* The minimum mix time has to pass before the reading is allowed to
+         * end the stage — O2 can read low near the sensor long before the
+         * chamber is actually homogeneous. */
+        if (stageElapsed(PURGE_STAGE2_MIN_S) && o2 < purge_target_ppm) {
+            enterStage(PURGE_VERIFY);
             return;
         }
-        if (purge_timeout_s != 0 &&
-            (millis() - purge_start_ms) >= (uint32_t)purge_timeout_s * 1000UL) {
-            purge_timed_out = true;
-            purge_enabled = false;
-            setValve(false);
+        /* Timing out does not abort. The old sequence went to verification
+         * anyway and reported what it found, which is the honest thing to do:
+         * the hold is what actually decides. */
+        if (stageElapsed(purge_timeout_s)) enterStage(PURGE_VERIFY);
+        return;
+
+    case PURGE_VERIFY:
+        if (o2 >= (uint16_t)(purge_target_ppm + PURGE_HOLD_MARGIN_PPM)) {
+            purge_result = PURGE_RESULT_FAILED;
+            enterStage(PURGE_IDLE);
+            return;
+        }
+        if (stageElapsed(PURGE_STAGE3_S)) {
+            purge_result = PURGE_RESULT_PASSED;
+            enterStage(PURGE_IDLE);
         }
         return;
-    }
 
-    /* Reached the target once; top up if it drifts back, with hysteresis so
-     * the solenoid does not chatter around the setpoint. */
-    if (!valve_open && o2 > (uint16_t)(purge_target_ppm + PURGE_HYSTERESIS_PPM))
-        setValve(true);
-    else if (valve_open && o2 <= purge_target_ppm)
-        setValve(false);
+    default:
+        enterStage(PURGE_IDLE);
+        return;
+    }
 }
 
 uint8_t setFan(const fan_set_t &req)
@@ -120,6 +185,12 @@ uint8_t setFan(const fan_set_t &req)
         return ACK_REFUSED;  /* no flow sensor fitted */
     default:
         return ACK_BAD_PARAM;
+    }
+
+    if (req.fan == FAN_CHAMBER_BLOWER && purging()) {
+        /* The purge owns the blower while it runs; the stages turn it off and
+         * on for a physical reason. */
+        return ACK_BUSY;
     }
 
     fan_t &f = fans[req.fan];
@@ -143,33 +214,37 @@ bool fillStatus(uint8_t fan, fan_status_t &out)
 uint8_t setPurge(const purge_set_t &req)
 {
     if (!req.enable) {
-        purge_enabled = false;
-        purge_reached = false;
+        /* Abort: shut the valve and stop the blower, as the old abort path
+         * did. No result is reported — nothing was concluded. */
+        purge_stage = PURGE_IDLE;
+        purge_result = PURGE_RESULT_NONE;
         setValve(false);
+        setBlowerDuty(0);
         return ACK_OK;
     }
+    if (purge_stage != PURGE_IDLE) return ACK_BUSY;
 
-    purge_enabled    = true;
-    purge_target_ppm = req.target_o2_ppm;
-    purge_timeout_s  = req.timeout_s;
+    purge_target_ppm = req.target_o2_ppm ? req.target_o2_ppm : PURGE_TARGET_DEFAULT_PPM;
+    purge_timeout_s  = req.timeout_s ? req.timeout_s : PURGE_STAGE2_TIMEOUT_S;
+    purge_result     = PURGE_RESULT_NONE;
+    purge_open_s     = 0;
     purge_start_ms   = millis();
-    purge_reached    = false;
-    purge_timed_out  = false;
-    setValve(true);
+    enterStage(PURGE_DISPLACE);
     return ACK_OK;
 }
 
-bool purging()
+bool purging() { return purge_stage != PURGE_IDLE; }
+
+uint8_t purgeStage() { return purge_stage; }
+
+purge_result_t consumePurgeResult()
 {
-    return purge_enabled && !purge_reached;
+    const purge_result_t r = purge_result;
+    purge_result = PURGE_RESULT_NONE;
+    return r;
 }
 
-bool consumePurgeTimeout()
-{
-    const bool t = purge_timed_out;
-    purge_timed_out = false;
-    return t;
-}
+uint16_t lastPurgeOpenSeconds() { return purge_open_s; }
 
 void allOff()
 {
@@ -178,8 +253,8 @@ void allOff()
         fans[i].duty_pm = 0;
         analogWrite(fans[i].pin, 0);
     }
-    purge_enabled = false;
-    purge_reached = false;
+    purge_stage = PURGE_IDLE;
+    purge_result = PURGE_RESULT_NONE;
     setValve(false);
 }
 

@@ -163,7 +163,7 @@ void serviceAxis(axis_t &a)
         const long togo = a.stepper->distanceToGo();
         if (limitTripped(a, togo)) {
             freeze(a);
-            a.flags |= AXIS_FLAG_AT_LIMIT;
+            a.flags |= (uint8_t)(AXIS_FLAG_AT_LIMIT | AXIS_FLAG_FAULT);
             /* Nothing outside homing expects to reach a switch. Do NOT
              * re-reference position here: a glitching switch would otherwise
              * silently redefine zero and every later clamp would be wrong. */
@@ -349,7 +349,7 @@ bool home(uint8_t axis)
     axis_t &a = axes[axis];
     if (a.phase != PH_IDLE) return false;
 
-    a.flags &= (uint8_t)~(AXIS_FLAG_HOMED | AXIS_FLAG_AT_LIMIT);
+    a.flags &= (uint8_t)~(AXIS_FLAG_HOMED | AXIS_FLAG_AT_LIMIT | AXIS_FLAG_FAULT);
     a.home_sample = 0;
     applySpeed(a, a.home_speed_um_s, HOME_ACCEL_UM_S2);
     beginSeek(a);
@@ -372,7 +372,7 @@ bool moveTo(uint8_t axis, int32_t target_um, uint32_t speed_um_s,
                   accel_um_s2 ? accel_um_s2 : a.def_accel_um_s2);
 
     a.final_target = umToSteps(target_um, a.steps_per_mm);
-    a.flags &= (uint8_t)~AXIS_FLAG_AT_LIMIT;
+    a.flags &= (uint8_t)~(AXIS_FLAG_AT_LIMIT | AXIS_FLAG_FAULT);
 
     /* Anti-backlash. The flag names the direction of the overshoot, so
      * APPROACH_NEG overshoots low and comes back up, leaving the final

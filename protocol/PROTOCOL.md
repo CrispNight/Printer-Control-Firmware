@@ -307,6 +307,44 @@ channels report cleared bits rather than a plausible-looking number — the old
 firmware learned this the hard way with a floating thermistor input reading
 ~95 °C.
 
+Only channels that are supposed to have a sensor on them can raise
+`FAULT_SENSOR_INVALID`. The unused thermistor inputs float or sit on a
+pull-down and read implausibly by design, so faulting on those would fire
+continuously.
+
+#### The purge is three stages, and the Mega runs all of them
+
+`MSG_PURGE_SET` starts a sequence, not a valve. The order is physical:
+
+```
+1. displace   solenoid OPEN,  blower OFF  — argon is heavier than air and
+                                            pushes it out by pressure; stirring
+                                            here would only remix the two
+2. mix        solenoid OPEN,  blower ON   — homogenise what is left, until O2
+                                            drops below target_o2_ppm
+3. verify     solenoid SHUT,  blower ON   — hold, and prove the chamber seals
+                                            rather than merely reaching the
+                                            number while gas still flows in
+```
+
+`target_o2_ppm` is the stage 2 aim and `timeout_s` bounds stage 2; both fall
+back to the machine's defaults when zero. A stage 2 timeout does **not** abort
+— it proceeds to verification, because the hold is what actually decides.
+
+The whole sequence can take **around forty minutes**, which is exactly why it
+cannot depend on a host staying connected. It used to live in the PC
+controller.
+
+A failed verification is reported (`FAULT_OXYGEN_HIGH` plus a log line) but
+stops nothing: whether to print into a chamber that did not hold is the job
+sequencer's decision, not the valve owner's. The real gate is that `STATE_READY`
+does not appear while oxygen is above the threshold.
+
+While a purge runs it **owns the chamber blower** — the stages switch it off and
+on for a physical reason — so `MSG_FAN_SET` on `FAN_CHAMBER_BLOWER` is answered
+`ACK_BUSY`. `state_report_t.substate` carries the stage number while
+`STATE_PURGING`.
+
 `MSG_SENSOR_OVERRIDE` reports channels being **substituted** rather than
 measured, together with what the hardware actually reads underneath. Overrides
 are compile-time on the sensing node so they cannot be set by accident, but
