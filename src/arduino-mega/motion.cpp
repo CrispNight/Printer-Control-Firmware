@@ -56,6 +56,7 @@ struct axis_t {
     uint8_t  phase;
     uint8_t  flags;             /* AXIS_FLAG_* */
     bool     limit_fault;
+    bool     travel_measured;
     long     final_target;      /* steps */
     uint8_t  home_sample;
     long     home_pos[3];       /* HOME_SAMPLES */
@@ -71,17 +72,17 @@ axis_t axes[AXIS_COUNT] = {
     {&feeder, PIN_FEED_LIM, PIN_NONE, FEED_STEPS_PER_MM,
      FEED_SPEED_UM_S, FEED_ACCEL_UM_S2, FEED_HOME_SPEED_UM_S,
      FEED_HOME_BACKOFF_UM, true,
-     FEED_MAX_UM, 0, 0, PH_IDLE, 0, false, 0, 0, {0, 0, 0}, 0},
+     FEED_MAX_UM, 0, 0, PH_IDLE, 0, false, false, 0, 0, {0, 0, 0}, 0},
     /* AXIS_BED */
     {&bed, PIN_BED_LIM, PIN_NONE, BED_STEPS_PER_MM,
      BED_SPEED_UM_S, BED_ACCEL_UM_S2, BED_HOME_SPEED_UM_S,
      BED_HOME_BACKOFF_UM, true,
-     BED_MAX_UM, 0, 0, PH_IDLE, 0, false, 0, 0, {0, 0, 0}, 0},
+     BED_MAX_UM, 0, 0, PH_IDLE, 0, false, false, 0, 0, {0, 0, 0}, 0},
     /* AXIS_WIPE — the only open-loop axis, and the only one with a far switch */
     {&wiper, PIN_WIPE_LIM, PIN_WIPE_LIM2, WIPE_STEPS_PER_MM,
      WIPE_SPEED_UM_S, WIPE_ACCEL_UM_S2, WIPE_HOME_SPEED_UM_S,
      WIPE_HOME_BACKOFF_UM, false,
-     WIPE_MAX_DEFAULT_UM, 0, 0, PH_IDLE, 0, false, 0, 0, {0, 0, 0}, 0},
+     WIPE_MAX_DEFAULT_UM, 0, 0, PH_IDLE, 0, false, false, 0, 0, {0, 0, 0}, 0},
 };
 
 long umToSteps(int32_t um, float steps_per_mm)
@@ -293,6 +294,7 @@ void serviceAxis(axis_t &a)
         if (digitalRead(a.lim_max_pin) == HIGH) {
             freeze(a);
             a.max_um = stepsToUm(a.stepper->currentPosition(), a.steps_per_mm);
+            a.travel_measured = true;
             a.commanded_um = HOME_PARK_UM;
             a.stepper->moveTo(umToSteps(HOME_PARK_UM, a.steps_per_mm));
             a.phase = PH_TRACK_RETURN;
@@ -505,6 +507,17 @@ uint8_t statusFlags(uint8_t axis)
 int32_t maxTravel_um(uint8_t axis)
 {
     return fitted(axis) ? axes[axis].max_um : 0;
+}
+
+uint8_t consumeTravelMeasured()
+{
+    for (uint8_t i = 0; i < AXIS_COUNT; i++) {
+        if (axes[i].travel_measured) {
+            axes[i].travel_measured = false;
+            return i;
+        }
+    }
+    return AXIS_NONE;
 }
 
 uint8_t consumeLimitFault()

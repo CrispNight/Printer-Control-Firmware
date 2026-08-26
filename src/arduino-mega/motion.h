@@ -64,6 +64,12 @@ uint8_t statusFlags(uint8_t axis);   /* AXIS_FLAG_* */
  * assumed, so it is not a constant. */
 int32_t maxTravel_um(uint8_t axis);
 
+/* Consume-once: an axis just finished measuring its travel against its far
+ * switch. Worth surfacing rather than keeping to ourselves — the number is a
+ * real measurement of the machine, and a belt that has slipped or a frame that
+ * has shifted shows up here first. Returns AXIS_NONE when there is nothing. */
+uint8_t consumeTravelMeasured();
+
 /* An axis that hit a limit switch where none was expected latches a fault.
  * Returns the axis id and clears it, or AXIS_NONE when there is nothing
  * pending, so the caller can turn it into one MSG_FAULT. */

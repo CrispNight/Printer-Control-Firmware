@@ -42,6 +42,11 @@ ESP32 has no hardware. The remaining work is collected in section 18.
 | `[ELSEWHERE]` | belongs in the board or PC repo, not this one |
 | `[SUPERSEDED]` | kept only so the old conclusion does not mislead |
 
+**Companion document:** `docs/UI-REQUIREMENTS.md` collects what a host needs
+from each board - settings, indicators, alerts, and the command semantics that
+are easy to get wrong. It is filled in as each board lands and becomes the UI
+specification once the Teensy is done.
+
 | # | Section | State |
 |---|---|---|
 | 1 | Frame renamed to data packet | `[DONE]` |
@@ -1040,11 +1045,33 @@ once per layer, but not once per jog. `PERSIST_MIN_INTERVAL_MS` (10 s) means a
 burst of setup jogs coalesces into one record, while a print's per-layer moves
 are far enough apart to each get saved.
 
-**Better mechanism, later.** EEPROM is the wrong medium for this and only just
-adequate. When position tracking moves onto the Teensy control board it should
-land on FRAM (effectively unlimited endurance, byte-writable, no burn delay) or
-the SD card that is already there for job files. Worth designing in on the next
-board revision rather than porting the EEPROM scheme across.
+**This is a hardware requirement for the next board revision, not just a
+firmware note.** `[ELSEWHERE]` - it belongs in the Galvo-Control-Board KiCad
+repo alongside the other board decisions, and should move there with the
+sections listed at the end of this document.
+
+EEPROM is the wrong medium for position storage and is only just adequate here.
+The Mega has 4 KB of it and a 100k-cycle endurance, and the whole rotating-slot
+scheme exists to work around that. **Do not port this scheme onto the control
+board.** If position tracking migrates to the Teensy, the board should carry
+either:
+
+- **FRAM** (e.g. an SPI part such as the FM25 family) - effectively unlimited
+  write endurance, byte-writable, no burn delay at all, so none of the wear
+  levelling, the settle timer, the write spacing or the byte-at-a-time
+  trickling is needed. A few dollars and one SPI chip select.
+- or **the SD card** that is already on the Teensy 4.1 for job files - free in
+  hardware terms, but it shares the P4 constraint (no filesystem access from an
+  ISR) and a card can be pulled or fail, so it wants the same
+  write-then-verify discipline as the job file.
+
+The Teensy 4.1's own "EEPROM" is emulated in flash and is *worse* than the
+Mega's for this pattern, so it is not the answer.
+
+**Why it matters enough to design in:** the stored position is the only thing
+protecting the top of the piston travel, where there is no limit switch. A
+storage medium that silently returns wrong data after wearing out is a storage
+medium that silently removes that protection.
 
 ### Teensy - ported and building, speaks no protocol yet
 

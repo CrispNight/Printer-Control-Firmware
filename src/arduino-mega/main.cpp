@@ -500,6 +500,23 @@ void serviceFaults()
     } else if (purge == airflow::PURGE_RESULT_PASSED) {
         link.sendLog(NODE_BROADCAST, LOG_INFO, "purge verified");
     }
+    if (purge != airflow::PURGE_RESULT_NONE) {
+        /* Argon is billed by solenoid-open time. There is no protocol field
+         * for it, so the number goes in the log rather than being thrown
+         * away — the PC used to keep a running total from exactly this. */
+        char line[32];
+        snprintf(line, sizeof(line), "argon open %us",
+                 (unsigned)airflow::lastPurgeOpenSeconds());
+        link.sendLog(NODE_BROADCAST, LOG_INFO, line);
+    }
+
+    const uint8_t measured = motion::consumeTravelMeasured();
+    if (measured != motion::AXIS_NONE) {
+        char line[40];
+        snprintf(line, sizeof(line), "axis %u travel %ld um",
+                 (unsigned)measured, (long)motion::maxTravel_um(measured));
+        link.sendLog(NODE_BROADCAST, LOG_INFO, line);
+    }
 
     const uint8_t dead = sensors::consumeInvalidSensor();
     if (dead != sensors::SENSOR_NONE)

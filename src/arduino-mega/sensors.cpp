@@ -201,16 +201,6 @@ bool consumeOverrideChanged()
     return changed;
 }
 
-uint16_t oxygenPpm(uint8_t index)
-{
-    return (index < NUM_OXYGEN_SENSORS) ? oxy_ppm[index] : 0;
-}
-
-int16_t tempC_x10(uint8_t index)
-{
-    return (index < NUM_TEMP_SENSORS) ? temp_c_x10[index] : 0;
-}
-
 uint16_t oxygenWorstPpm()
 {
     uint16_t worst = 0;

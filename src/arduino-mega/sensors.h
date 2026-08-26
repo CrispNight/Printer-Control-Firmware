@@ -43,9 +43,6 @@ void fillOverride(sensor_override_t &out);
  * periodic report. */
 bool consumeOverrideChanged();
 
-uint16_t oxygenPpm(uint8_t index);   /* as reported — substituted if overridden */
-int16_t  tempC_x10(uint8_t index);
-
 /* Highest of the oxygen channels, which is the one that matters for purging. */
 uint16_t oxygenWorstPpm();
 
