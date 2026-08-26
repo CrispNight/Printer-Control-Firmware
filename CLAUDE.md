@@ -10,7 +10,7 @@ for the wire format before changing anything under `protocol/`.
   `protocol/protocol.py` — it is generated. After any header change, run
   `python tools/gen_protocol.py` and `python tools/test_protocol.py`, and
   commit the header, `PROTOCOL.md` and the regenerated `protocol.py` together.
-- **Bump `PROTOCOL_VERSION`** for any change to the frame layout, message ids
+- **Bump `PROTOCOL_VERSION`** for any change to the packet layout, message ids
   or payload structs, including adding a new message id.
 - **No floats on the wire.** The Mega has no FPU; every quantity is a
   fixed-point integer with its unit in the member name (`_um`, `_pm`,

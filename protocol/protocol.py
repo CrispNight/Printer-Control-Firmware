@@ -12,18 +12,18 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import ClassVar, Tuple
 
-SOURCE_HASH = "57fbf30a173ae3af"  # sha256 of the generated region of protocol.h
+SOURCE_HASH = "c0eb69a57259c168"  # sha256 of the generated region of protocol.h
 
 
 # --- Constants -----------------------------------------------------------
 
 PROTOCOL_VERSION = 1
-FRAME_SOF0 = 0xA5
-FRAME_SOF1 = 0x5A
-FRAME_HEADER_LEN = 9
-FRAME_CRC_LEN = 2
-FRAME_MAX_PAYLOAD = 0xC0
-FRAME_MAX_LEN = 0xCB
+PACKET_SOF0 = 0xA5
+PACKET_SOF1 = 0x5A
+PACKET_HEADER_LEN = 9
+PACKET_CRC_LEN = 2
+PACKET_MAX_PAYLOAD = 0xC0
+PACKET_MAX_LEN = 0xCB
 FLAG_NEEDS_ACK = 1
 FLAG_IS_RESPONSE = 2
 FLAG_IS_ERROR = 4
@@ -993,13 +993,13 @@ class FanStatus:
 
 
 
-# --- Framing -------------------------------------------------------------
+# --- Packet framing -------------------------------------------------------------
 # Layout (little-endian):
 #   SOF0 SOF1 VER SRC DST MSG FLAGS SEQ LEN  payload[LEN]  CRC16
 #   0    1    2   3   4   5   6     7   8    9..           last two bytes
 # CRC-16/CCITT-FALSE over VER..payload inclusive, i.e. bytes [2, 9+LEN).
 
-_FRAME_HEADER = struct.Struct("<BBBBBBBBB")
+_PACKET_HEADER = struct.Struct("<BBBBBBBBB")
 
 
 def crc16_ccitt(data: bytes) -> int:
@@ -1013,8 +1013,8 @@ def crc16_ccitt(data: bytes) -> int:
 
 
 @dataclass
-class Frame:
-    """One decoded protocol frame."""
+class Packet:
+    """One decoded protocol packet."""
 
     src: int = 0
     dst: int = 0
@@ -1025,14 +1025,14 @@ class Frame:
     version: int = PROTOCOL_VERSION
 
     def pack(self) -> bytes:
-        if len(self.payload) > FRAME_MAX_PAYLOAD:
+        if len(self.payload) > PACKET_MAX_PAYLOAD:
             raise ValueError(
                 f"payload of {len(self.payload)} bytes exceeds "
-                f"FRAME_MAX_PAYLOAD ({FRAME_MAX_PAYLOAD})"
+                f"PACKET_MAX_PAYLOAD ({PACKET_MAX_PAYLOAD})"
             )
-        header = _FRAME_HEADER.pack(
-            FRAME_SOF0,
-            FRAME_SOF1,
+        header = _PACKET_HEADER.pack(
+            PACKET_SOF0,
+            PACKET_SOF1,
             self.version,
             self.src,
             self.dst,
@@ -1048,51 +1048,51 @@ class Frame:
 _NEED_MORE = object()  # decoder needs more bytes before it can decide
 
 
-class FrameDecoder:
+class PacketDecoder:
     """Incremental byte-stream decoder. Feed it whatever the port hands you.
 
-    Resynchronises on its own: a corrupted frame costs at most one frame, and
-    the decoder picks the next valid start-of-frame out of the stream.
+    Resynchronises on its own: a corrupted packet costs at most one packet, and
+    the decoder picks the next valid start-of-packet out of the stream.
     """
 
     def __init__(self) -> None:
         self._buf = bytearray()
         self.crc_errors = 0
 
-    def feed(self, data: bytes) -> list["Frame"]:
+    def feed(self, data: bytes) -> list["Packet"]:
         self._buf.extend(data)
-        frames: list[Frame] = []
+        packets: list[Packet] = []
         while True:
             result = self._try_decode()
             if result is _NEED_MORE:
-                return frames
+                return packets
             if result is not None:
-                frames.append(result)
+                packets.append(result)
             # result None: a byte was discarded to resync — keep scanning, so a
-            # good frame sitting behind a corrupt one is still delivered.
+            # good packet sitting behind a corrupt one is still delivered.
 
     def _try_decode(self):
-        """Frame on success, None after discarding a byte, _NEED_MORE if starved."""
+        """Packet on success, None after discarding a byte, _NEED_MORE if starved."""
         buf = self._buf
-        # Discard anything before a start-of-frame pair.
-        while len(buf) >= 2 and not (buf[0] == FRAME_SOF0 and buf[1] == FRAME_SOF1):
+        # Discard anything before a start-of-packet pair.
+        while len(buf) >= 2 and not (buf[0] == PACKET_SOF0 and buf[1] == PACKET_SOF1):
             del buf[0]
-        if len(buf) < FRAME_HEADER_LEN:
+        if len(buf) < PACKET_HEADER_LEN:
             return _NEED_MORE
         length = buf[8]
-        if length > FRAME_MAX_PAYLOAD:
-            del buf[0]  # bogus length: this was not a real frame start
+        if length > PACKET_MAX_PAYLOAD:
+            del buf[0]  # bogus length: this was not a real packet start
             return None
-        total = FRAME_HEADER_LEN + length + 2
+        total = PACKET_HEADER_LEN + length + 2
         if len(buf) < total:
             return _NEED_MORE
-        payload = bytes(buf[FRAME_HEADER_LEN : FRAME_HEADER_LEN + length])
+        payload = bytes(buf[PACKET_HEADER_LEN : PACKET_HEADER_LEN + length])
         (received,) = struct.unpack("<H", bytes(buf[total - 2 : total]))
-        if crc16_ccitt(bytes(buf[2 : FRAME_HEADER_LEN + length])) != received:
+        if crc16_ccitt(bytes(buf[2 : PACKET_HEADER_LEN + length])) != received:
             self.crc_errors += 1
             del buf[0]  # resync past this false start
             return None
-        frame = Frame(
+        packet = Packet(
             version=buf[2],
             src=buf[3],
             dst=buf[4],
@@ -1102,4 +1102,4 @@ class FrameDecoder:
             payload=payload,
         )
         del buf[:total]
-        return frame
+        return packet

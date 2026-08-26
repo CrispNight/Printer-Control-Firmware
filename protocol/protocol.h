@@ -35,22 +35,22 @@ extern "C" {
  * markers is ignored by the generator and is free-form C.
  * ========================================================================= */
 
-/* Bump on ANY change to frame layout, message ids, or payload structs.
+/* Bump on ANY change to packet layout, message ids, or payload structs.
  * Nodes refuse to talk to a peer reporting a different major version. */
 #define PROTOCOL_VERSION 1
 
-/* --- Framing ------------------------------------------------------------ */
+/* --- Packet framing ------------------------------------------------------ */
 
-#define FRAME_SOF0        0xA5  /* start-of-frame byte 0 */
-#define FRAME_SOF1        0x5A  /* start-of-frame byte 1 */
-#define FRAME_HEADER_LEN  9     /* SOF0..LEN inclusive */
-#define FRAME_CRC_LEN     2
-#define FRAME_MAX_PAYLOAD 192
-#define FRAME_MAX_LEN     203   /* HEADER_LEN + MAX_PAYLOAD + CRC_LEN */
+#define PACKET_SOF0        0xA5  /* start-of-packet byte 0 */
+#define PACKET_SOF1        0x5A  /* start-of-packet byte 1 */
+#define PACKET_HEADER_LEN  9     /* SOF0..LEN inclusive */
+#define PACKET_CRC_LEN     2
+#define PACKET_MAX_PAYLOAD 192
+#define PACKET_MAX_LEN     203   /* HEADER_LEN + MAX_PAYLOAD + CRC_LEN */
 
-/* Frame flag bits (the FLAGS header byte). */
+/* Packet flag bits (the FLAGS header byte). */
 #define FLAG_NEEDS_ACK    0x01  /* sender expects an ACK for this SEQ */
-#define FLAG_IS_RESPONSE  0x02  /* this frame answers an earlier SEQ */
+#define FLAG_IS_RESPONSE  0x02  /* this packet answers an earlier SEQ */
 #define FLAG_IS_ERROR     0x04  /* payload is a fault_report_t */
 #define FLAG_NO_ROUTE     0x08  /* do not forward; consume at DST only */
 
@@ -214,7 +214,7 @@ typedef enum {
 } laser_state_t;
 
 /* Written to laser_arm_t.key to arm. Guards against a corrupted or stray
- * frame enabling emission. */
+ * packet enabling emission. */
 #define LASER_ARM_KEY 0x4D4F4152UL  /* "MOAR" */
 
 /* vector_point_t.flags bits */
@@ -271,7 +271,7 @@ typedef struct {
 /* MSG_ACK */
 typedef struct {
     uint8_t ack_msg;  /* msg_id_t being acknowledged */
-    uint8_t ack_seq;  /* SEQ of the frame being acknowledged */
+    uint8_t ack_seq;  /* SEQ of the packet being acknowledged */
     uint8_t status;   /* ack_status_t */
 } sys_ack_t;
 
@@ -379,7 +379,7 @@ typedef struct {
     uint16_t timeout_s;      /* 0 = no timeout */
 } purge_set_t;
 
-/* MSG_LASER_ARM — key must equal LASER_ARM_KEY or the frame is refused. */
+/* MSG_LASER_ARM — key must equal LASER_ARM_KEY or the packet is refused. */
 typedef struct {
     uint8_t  arm;  /* 0 = disarm, 1 = arm */
     uint8_t  reserved;
@@ -399,8 +399,8 @@ typedef struct {
 } laser_params_t;
 
 /* MSG_MARK_BATCH header. Followed in the same payload by `count`
- * vector_point_t records. count is bounded by FRAME_MAX_PAYLOAD:
- *   count <= (FRAME_MAX_PAYLOAD - sizeof(mark_batch_header_t)) / sizeof(vector_point_t) */
+ * vector_point_t records. count is bounded by PACKET_MAX_PAYLOAD:
+ *   count <= (PACKET_MAX_PAYLOAD - sizeof(mark_batch_header_t)) / sizeof(vector_point_t) */
 typedef struct {
     uint16_t layer_index;
     uint16_t batch_index;  /* 0-based, monotonic within a layer */
@@ -467,9 +467,9 @@ static inline uint16_t crc16_ccitt(const uint8_t *data, uint16_t len)
     return crc;
 }
 
-/* Maximum vector_point_t records that fit in one MSG_MARK_BATCH frame. */
+/* Maximum vector_point_t records that fit in one MSG_MARK_BATCH packet. */
 #define MARK_BATCH_MAX_POINTS \
-    ((FRAME_MAX_PAYLOAD - (int)sizeof(mark_batch_header_t)) / (int)sizeof(vector_point_t))
+    ((PACKET_MAX_PAYLOAD - (int)sizeof(mark_batch_header_t)) / (int)sizeof(vector_point_t))
 
 #ifdef __cplusplus
 } /* extern "C" */

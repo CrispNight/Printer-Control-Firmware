@@ -50,57 +50,57 @@ def test_struct_roundtrip():
           "SysHello build_id is NUL-padded and recoverable")
 
 
-def test_frame_roundtrip():
+def test_packet_roundtrip():
     payload = p.StateReport(state=p.MachineState.PRINTING, layer_index=17,
                             layer_total=400, elapsed_s=1234).pack()
-    frame = p.Frame(src=p.NodeId.TEENSY_GALVO, dst=p.NodeId.PC,
-                    msg=p.MsgId.STATE, seq=7, payload=payload)
-    wire = frame.pack()
-    check(len(wire) == p.FRAME_HEADER_LEN + len(payload) + 2, "frame length is header+payload+crc")
-    check(wire[0] == p.FRAME_SOF0 and wire[1] == p.FRAME_SOF1, "frame starts with A5 5A")
+    packet = p.Packet(src=p.NodeId.TEENSY_GALVO, dst=p.NodeId.PC,
+                      msg=p.MsgId.STATE, seq=7, payload=payload)
+    wire = packet.pack()
+    check(len(wire) == p.PACKET_HEADER_LEN + len(payload) + 2, "packet length is header+payload+crc")
+    check(wire[0] == p.PACKET_SOF0 and wire[1] == p.PACKET_SOF1, "packet starts with A5 5A")
 
-    decoded = p.FrameDecoder().feed(wire)
-    check(len(decoded) == 1, "one frame decodes to one frame")
+    decoded = p.PacketDecoder().feed(wire)
+    check(len(decoded) == 1, "one packet decodes to one packet")
     check(decoded[0].msg == p.MsgId.STATE and decoded[0].seq == 7, "header survives")
     check(p.StateReport.unpack(decoded[0].payload).layer_index == 17, "payload survives")
 
 
 def test_decoder_recovery():
     payload = p.FanSet(mode=p.FanMode.MANUAL, duty_pm=650).pack()
-    wire = p.Frame(src=p.NodeId.PC, dst=p.NODE_AIRFLOW, msg=p.MsgId.FAN_SET,
-                   payload=payload).pack()
+    wire = p.Packet(src=p.NodeId.PC, dst=p.NODE_AIRFLOW, msg=p.MsgId.FAN_SET,
+                    payload=payload).pack()
 
-    dec = p.FrameDecoder()
+    dec = p.PacketDecoder()
     got = dec.feed(b"\x00\xffnoise\xa5") + dec.feed(wire)
     check(len(got) == 1, "decoder skips leading noise")
 
     # Split across arbitrary chunk boundaries, as a serial port would deliver it.
-    dec = p.FrameDecoder()
+    dec = p.PacketDecoder()
     got = [f for i in range(len(wire)) for f in dec.feed(wire[i:i + 1])]
     check(len(got) == 1, "decoder reassembles a byte-at-a-time stream")
 
-    # A corrupt frame must cost exactly one frame, not the link.
+    # A corrupt packet must cost exactly one packet, not the link.
     corrupt = bytearray(wire)
     corrupt[10] ^= 0xFF
-    dec = p.FrameDecoder()
+    dec = p.PacketDecoder()
     got = dec.feed(bytes(corrupt) + wire)
     check(len(got) == 1 and dec.crc_errors == 1,
-          "corrupt frame is dropped and the next one still decodes")
+          "corrupt packet is dropped and the next one still decodes")
 
-    # Back-to-back frames in one read.
-    dec = p.FrameDecoder()
-    check(len(dec.feed(wire * 3)) == 3, "three concatenated frames decode")
+    # Back-to-back packets in one read.
+    dec = p.PacketDecoder()
+    check(len(dec.feed(wire * 3)) == 3, "three concatenated packets decode")
 
 
 def test_invariants():
     check(p.NODE_AIRFLOW == p.NodeId.ARDUINO_MEGA,
           "NODE_AIRFLOW still points at the Mega (update PROTOCOL.md when it moves)")
-    max_points = (p.FRAME_MAX_PAYLOAD - p.MarkBatchHeader.SIZE) // p.VectorPoint.SIZE
-    check(max_points == 20, f"MARK_BATCH holds {max_points} points per frame")
-    check(p.FRAME_MAX_LEN == p.FRAME_HEADER_LEN + p.FRAME_MAX_PAYLOAD + p.FRAME_CRC_LEN,
-          "FRAME_MAX_LEN agrees with its parts")
+    max_points = (p.PACKET_MAX_PAYLOAD - p.MarkBatchHeader.SIZE) // p.VectorPoint.SIZE
+    check(max_points == 20, f"MARK_BATCH holds {max_points} points per packet")
+    check(p.PACKET_MAX_LEN == p.PACKET_HEADER_LEN + p.PACKET_MAX_PAYLOAD + p.PACKET_CRC_LEN,
+          "PACKET_MAX_LEN agrees with its parts")
 
-    oversized = p.Frame(payload=b"\x00" * (p.FRAME_MAX_PAYLOAD + 1))
+    oversized = p.Packet(payload=b"\x00" * (p.PACKET_MAX_PAYLOAD + 1))
     try:
         oversized.pack()
     except ValueError:
@@ -110,7 +110,7 @@ def test_invariants():
 
 
 def main():
-    tests = [test_crc, test_struct_roundtrip, test_frame_roundtrip,
+    tests = [test_crc, test_struct_roundtrip, test_packet_roundtrip,
              test_decoder_recovery, test_invariants]
     for test in tests:
         print(f"{test.__name__}:")

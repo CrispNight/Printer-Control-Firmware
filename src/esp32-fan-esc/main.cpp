@@ -63,15 +63,15 @@ void sendFanStatus(uint8_t dst)
     link.sendStruct(dst, MSG_FAN_STATUS, status, FLAG_IS_RESPONSE);
 }
 
-void onFrame(const MoirenFrame &frame, void *)
+void onPacket(const packet_t &packet, void *)
 {
-    switch (frame.msg) {
+    switch (packet.msg) {
     case MSG_PING:
-        link.sendEmpty(frame.src, MSG_PONG, FLAG_IS_RESPONSE);
+        link.sendEmpty(packet.src, MSG_PONG, FLAG_IS_RESPONSE);
         break;
 
     case MSG_HELLO:
-        sendHello(frame.src);
+        sendHello(packet.src);
         break;
 
     case MSG_ESTOP:
@@ -80,27 +80,27 @@ void onFrame(const MoirenFrame &frame, void *)
         commanded.duty_pm = 0;
         machine_state = STATE_ESTOP;
         fault_flags |= FAULTBIT_ESTOP;
-        link.sendAck(frame, ACK_OK);
+        link.sendAck(packet, ACK_OK);
         break;
 
     case MSG_FAN_SET:
-        if (frame.len < sizeof(fan_set_t)) {
-            link.sendAck(frame, ACK_BAD_LENGTH);
+        if (packet.len < sizeof(fan_set_t)) {
+            link.sendAck(packet, ACK_BAD_LENGTH);
             break;
         }
         /* Accepted and recorded, but not applied to an output — a caller can
          * be developed against this node before the hardware exists. */
-        memcpy(&commanded, frame.payload, sizeof(fan_set_t));
-        link.sendAck(frame, ACK_OK);
-        sendFanStatus(frame.src);
+        memcpy(&commanded, packet.payload, sizeof(fan_set_t));
+        link.sendAck(packet, ACK_OK);
+        sendFanStatus(packet.src);
         break;
 
     case MSG_FAN_STATUS:
-        sendFanStatus(frame.src);
+        sendFanStatus(packet.src);
         break;
 
     default:
-        link.sendAck(frame, ACK_UNKNOWN_MSG);
+        link.sendAck(packet, ACK_UNKNOWN_MSG);
         break;
     }
 }
@@ -110,7 +110,7 @@ void onFrame(const MoirenFrame &frame, void *)
 void setup()
 {
     Serial.begin(115200);
-    link.onFrame(onFrame);
+    link.onPacket(onPacket);
     machine_state = STATE_IDLE;
     sendHello(NODE_BROADCAST);
 }

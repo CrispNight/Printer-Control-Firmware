@@ -25,14 +25,14 @@ The protocol is shaped by four facts about this machine:
    safety or timing path.
 2. **The topology is going to change.** Today the PC drives the Mega and the
    Teensy over two separate USB links. The Teensy is the intended master, and
-   the next revision of the control card adds inter-board ports. Every frame
+   the next revision of the control card adds inter-board ports. Every packet
    therefore carries an explicit `src` and `dst`, so that migration is a
    routing change and not a protocol change.
 3. **The Mega is small.** 8 KB of RAM, no FPU. Hence fixed-point integers
    rather than floats, a table-free CRC, and a 192-byte payload ceiling.
 4. **Wires in a machine with a 200 W laser and stepper drivers are noisy.**
-   Every frame is CRC-checked and the decoder resynchronises on its own; a
-   corrupt frame costs one frame, never the link.
+   Every packet is CRC-checked and the decoder resynchronises on its own; a
+   corrupt packet costs one packet, never the link.
 
 ## Nodes
 
@@ -58,10 +58,10 @@ TODAY                              TARGET
               sensors, airflow)                    └── UART ──> ESP32  (airflow)
 ```
 
-The message definitions are identical in both. Only who forwards frames
+The message definitions are identical in both. Only who forwards packets
 changes.
 
-## Frame format
+## Packet format
 
 All multi-byte fields are **little-endian**. Header is 9 bytes, trailer is 2.
 
@@ -80,33 +80,33 @@ All multi-byte fields are **little-endian**. Header is 9 bytes, trailer is 2.
   9+LEN   2    CRC16   CRC-16/CCITT-FALSE over bytes [2, 9+LEN)
 ```
 
-Maximum frame is 203 bytes (`FRAME_MAX_LEN`).
+Maximum packet is 203 bytes (`PACKET_MAX_LEN`).
 
 **CRC coverage deliberately excludes the SOF bytes** so that the decoder can
-discard a false start-of-frame and resynchronise without the CRC having to be
+discard a false start-of-packet and resynchronise without the CRC having to be
 recomputed over a shifting window.
 
 | Flag | Value | Meaning |
 |---|---|---|
 | `FLAG_NEEDS_ACK` | `0x01` | sender expects `MSG_ACK` quoting this `SEQ` |
-| `FLAG_IS_RESPONSE` | `0x02` | this frame answers an earlier `SEQ` |
+| `FLAG_IS_RESPONSE` | `0x02` | this packet answers an earlier `SEQ` |
 | `FLAG_IS_ERROR` | `0x04` | payload is a `fault_report_t` |
 | `FLAG_NO_ROUTE` | `0x08` | do not forward; consume at `DST` only |
 
 ### Receiving
 
 1. Scan for `A5 5A`.
-2. Read 7 header bytes. If `LEN > 192`, this was not a frame start — discard
+2. Read 7 header bytes. If `LEN > 192`, this was not a packet start — discard
    one byte and rescan.
 3. Read `LEN` payload bytes and 2 CRC bytes.
 4. Verify the CRC. On mismatch, count it, discard one byte, rescan.
-5. Drop the frame unless `DST` is this node or `NODE_BROADCAST`.
+5. Drop the packet unless `DST` is this node or `NODE_BROADCAST`.
 6. If `VER` differs from `PROTOCOL_VERSION`, reply `MSG_FAULT` with
    `FAULT_VERSION_MISMATCH` and drop it. **Nodes do not attempt to interoperate
    across protocol versions.**
 
 `MoirenLink` (`lib/moiren_link/`) implements exactly this for the firmware;
-`FrameDecoder` in the generated `protocol.py` implements it for the PC. The two
+`PacketDecoder` in the generated `protocol.py` implements it for the PC. The two
 are kept behaviourally identical on purpose — the CRC routine in each passes
 the standard CCITT-FALSE check value `0x29B1` for input `"123456789"`.
 
@@ -194,13 +194,13 @@ reading ~95 °C.
 | `0x53` | `MSG_MARK_ABORT` | — |
 | `0x54` | `MSG_GALVO_STATUS` | `galvo_status_t` |
 
-`laser_arm_t.key` must equal `LASER_ARM_KEY` (`0x4D4F4152`) or the frame is
+`laser_arm_t.key` must equal `LASER_ARM_KEY` (`0x4D4F4152`) or the packet is
 refused with `ACK_BAD_PARAM`. A single corrupted byte should not be able to
 arm a laser, and the CRC alone is not a strong enough guarantee for that one
 message.
 
 `MSG_MARK_BATCH` carries a header followed by up to
-`MARK_BATCH_MAX_POINTS` (**20**) `vector_point_t` records in the same frame.
+`MARK_BATCH_MAX_POINTS` (**20**) `vector_point_t` records in the same packet.
 Coordinates are absolute bed micrometres; the Teensy applies the field
 correction table. **The PC never sends raw DAC counts** — correction data
 belongs with the board that owns the galvo, so a recalibration does not
@@ -255,12 +255,12 @@ else answers `ACK_BAD_STATE`.
 Separately, `FAULTBIT_*` is a bitfield of fault *domains* (door, oxygen, temp,
 motion, laser, galvo, airflow, comms, estop) carried in `state_report_t`,
 `sys_heartbeat_t` and `galvo_status_t` — a node can report several concurrent
-problems in one 16-bit field without needing several frames.
+problems in one 16-bit field without needing several packets.
 
 ## Changing the protocol
 
 1. Edit `protocol/protocol.h`.
-2. Bump `PROTOCOL_VERSION` for **any** change to the frame layout, message ids
+2. Bump `PROTOCOL_VERSION` for **any** change to the packet layout, message ids
    or payload structs. Nodes refuse to talk across versions, which is the
    intended behaviour: a mismatched pair should fail loudly at link-up rather
    than misinterpret a struct mid-print.

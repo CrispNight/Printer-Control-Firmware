@@ -62,19 +62,19 @@ void sendState(uint8_t dst)
     link.sendStruct(dst, MSG_STATE, state, FLAG_IS_RESPONSE);
 }
 
-void onFrame(const MoirenFrame &frame, void *)
+void onPacket(const packet_t &packet, void *)
 {
-    switch (frame.msg) {
+    switch (packet.msg) {
     case MSG_PING:
-        link.sendEmpty(frame.src, MSG_PONG, FLAG_IS_RESPONSE);
+        link.sendEmpty(packet.src, MSG_PONG, FLAG_IS_RESPONSE);
         break;
 
     case MSG_HELLO:
-        sendHello(frame.src);
+        sendHello(packet.src);
         break;
 
     case MSG_STATE_REQUEST:
-        sendState(frame.src);
+        sendState(packet.src);
         break;
 
     case MSG_ESTOP:
@@ -82,7 +82,7 @@ void onFrame(const MoirenFrame &frame, void *)
          * here, ahead of anything else in this handler. */
         machine_state = STATE_ESTOP;
         fault_flags |= FAULTBIT_ESTOP;
-        link.sendAck(frame, ACK_OK);
+        link.sendAck(packet, ACK_OK);
         break;
 
     case MSG_AXIS_HOME:
@@ -93,11 +93,11 @@ void onFrame(const MoirenFrame &frame, void *)
     case MSG_FAN_SET:
         /* TODO(port): dispatch into motion/airflow once ported. Refused until
          * then rather than silently accepted. */
-        link.sendAck(frame, ACK_REFUSED);
+        link.sendAck(packet, ACK_REFUSED);
         break;
 
     default:
-        link.sendAck(frame, ACK_UNKNOWN_MSG);
+        link.sendAck(packet, ACK_UNKNOWN_MSG);
         break;
     }
 }
@@ -107,7 +107,7 @@ void onFrame(const MoirenFrame &frame, void *)
 void setup()
 {
     Serial.begin(115200);
-    link.onFrame(onFrame);
+    link.onPacket(onPacket);
     machine_state = STATE_IDLE;
     sendHello(NODE_BROADCAST);
 }

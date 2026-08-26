@@ -44,7 +44,7 @@ Today the PC drives the Mega and the Teensy over two separate USB links. The
 Teensy is the intended master, and the next revision of the control card adds
 inter-board ports so the Teensy can drive the other two directly.
 
-Every frame carries an explicit source and destination node, so that migration
+Every packet carries an explicit source and destination node, so that migration
 is a routing change and **not** a protocol change. Nothing in the message
 definitions has to move when it happens.
 
@@ -83,7 +83,7 @@ python tools/test_protocol.py     # round-trip checks
 Commit the header, `PROTOCOL.md` and the regenerated `protocol.py` together.
 CI fails the build if `protocol.py` is stale.
 
-Read [protocol/PROTOCOL.md](protocol/PROTOCOL.md) for the frame format,
+Read [protocol/PROTOCOL.md](protocol/PROTOCOL.md) for the packet format,
 the message catalogue, units and the state machine.
 
 ## Porting
