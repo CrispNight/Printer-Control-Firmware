@@ -1,0 +1,7 @@
+{
+  "name": "moiren_link",
+  "version": "0.1.0",
+  "description": "Framing and dispatch for the Moiren SLM machine protocol (protocol/protocol.h)",
+  "frameworks": "arduino",
+  "platforms": "*"
+}

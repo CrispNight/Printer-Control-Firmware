@@ -1,0 +1,39 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# VSCode — keep shared config, ignore machine-local + PIO-generated
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+
+# Python (protocol codegen tooling)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build / editor / OS noise
+*.elf
+*.hex
+*.bin
+*.map
+*.o
+*.a
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Machine logs pulled off the printer for debugging — keep them out of the repo
+*.flag
+Motor_Log.txt
+Sensor_Log.txt
+cam_log.txt
