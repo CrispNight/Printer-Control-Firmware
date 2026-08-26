@@ -1042,14 +1042,47 @@ afterwards, and for working out where the time actually goes.
 - Motor load slots in later as another field once encoders report it.
 
 **Sizing:** ~32 bytes per record at 1 Hz is ~115 KB/hour, so a 10-hour print is
-about 1 MB. A ring of 128 records is 4 KB of RAM and flushes roughly once a
-minute.
+about 1 MB.
 
-**Flush when half full - do not wait for the recoat dwell.** An earlier draft
-said never write during marking; that was over-cautious. A worst-case SD stall
-is ~250 ms against 2-8 seconds of vector cushion, so a log write during a mark
-is comfortably absorbed. Waiting for the dwell would mean buffering a whole
-layer, which for a dense 5-10 minute layer is real RAM for no benefit.
+**Ring of 512 records - 16 KB, about 8.5 minutes of buffer. Flush
+preferentially during the recoat dwell; force-flush only above 90% full.**
+
+Since a dwell occurs every layer and the buffer holds several minutes,
+essentially every flush lands in a dwell where a stall costs nothing. The
+force-flush is a backstop for a pathologically long layer, not the normal path.
+
+### What an SD stall actually costs
+
+Only the **main loop** blocks. Interrupts keep running, so:
+
+- **Galvo marking never glitches** - DMA plus refill ISR.
+- **The watchdog never trips** - `watchdog.h` states the kicker runs on a PIT
+  timer specifically so a stuck `loop()` cannot trip it.
+- **No incoming packet is lost** - receive is interrupt-driven and buffered;
+  packets are processed late, not dropped.
+- **The hardware safety chain is unaffected** - door, oxygen and temperature
+  interlocks cut the laser without consulting firmware (section 17).
+- **The Mega is unaffected** - it has no card, so sensing and interlock checks
+  continue regardless.
+
+What is delayed is the Teensy's *software* reaction, such as acting on a
+received `MSG_ESTOP`, by up to ~250 ms. That is a degradation of a secondary
+path, not a hole in the primary one - but it is the reason emergency stop must
+stay a hardware path and never depend on the main loop.
+
+Chunking the writes helps only slightly: the stall comes from the card's
+internal erase and wear-levelling, not from write size, so smaller writes lower
+the average but not the worst case.
+
+Vector refills do happen during marking by necessity, and are covered by the
+2-8 second cushion above. Even a log flush and a vector refill serialising into
+a ~500 ms worst case sits comfortably inside it.
+
+**Related, worth revisiting separately:** because the watchdog is kicked from a
+timer ISR, it proves interrupts are alive but not that `loop()` is making
+progress. That is deliberate and documented, but it means a hung main loop is
+not detected. A progress-gated watchdog would need a timeout longer than the
+worst SD stall.
 
 ### Rejected: exposing the card as a USB drive
 
