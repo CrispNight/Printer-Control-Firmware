@@ -35,6 +35,7 @@
 #include "config.h"
 #include "lighting.h"
 #include "motion.h"
+#include "persist.h"
 #include "pins.h"
 #include "recoat.h"
 #include "safety.h"
@@ -584,6 +585,7 @@ void setup()
     /* Outputs are configured by the modules that own them, and every one of
      * them comes up in its safe state: drivers not stepping, solenoid closed,
      * fans at zero, lights off. */
+    persist::begin();   /* before motion::begin(), which restores from it */
     motion::begin();
     sensors::begin();
     safety::begin();
@@ -619,6 +621,7 @@ void loop()
     motion::service();
 
     recoat::service();
+    persist::service();
     sensors::service();
     safety::service();
     airflow::service();

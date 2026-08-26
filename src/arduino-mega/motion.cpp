@@ -5,6 +5,7 @@
 #include <math.h>
 
 #include "config.h"
+#include "persist.h"
 #include "pins.h"
 
 namespace motion {
@@ -135,6 +136,12 @@ bool isHoming(const axis_t &a)
  * nothing, and clamping against a meaningless zero would block every move —
  * which is precisely why the old firmware shipped with its bounds overrides
  * turned on. Un-homed axes are protected by the switches alone. */
+/* Software bounds need a zero to measure from, and AXIS_FLAG_HOMED means "has
+ * a usable zero" whether it came from homing this power cycle or from the
+ * position store. This is the ONLY protection at the top of the piston travel
+ * — those cylinders have a limit switch at the bottom only, and driven far
+ * enough up they push the weight out. An axis with no zero at all still gets
+ * the switches, and nothing else. */
 int32_t clampTarget(const axis_t &a, int32_t target_um)
 {
     if (BOUNDS_OVERRIDE) return target_um;
@@ -142,6 +149,11 @@ int32_t clampTarget(const axis_t &a, int32_t target_um)
     if (target_um < 0) return 0;
     if (target_um > a.max_um) return a.max_um;
     return target_um;
+}
+
+uint8_t axisIndexOf(const axis_t &a)
+{
+    return (uint8_t)(&a - &axes[0]);
 }
 
 void beginSeek(axis_t &a)
@@ -259,7 +271,9 @@ void serviceAxis(axis_t &a)
             return;
         }
         a.flags |= AXIS_FLAG_HOMED;
-        a.flags &= (uint8_t)~AXIS_FLAG_AT_LIMIT;
+        /* Verified this power cycle, so it is no longer merely believed. */
+        a.flags &= (uint8_t)~(AXIS_FLAG_AT_LIMIT | AXIS_FLAG_POS_RESTORED);
+        persist::note(axisIndexOf(a), a.commanded_um, true);
         if (a.lim_max_pin != PIN_NONE) {
             /* Measure the real travel rather than trusting a constant — the
              * recoater's usable length is a belt-and-frame property. */
@@ -326,9 +340,20 @@ void begin()
 
     for (uint8_t i = 0; i < AXIS_COUNT; i++) {
         applySpeed(axes[i], axes[i].def_speed_um_s, axes[i].def_accel_um_s2);
-        axes[i].stepper->setCurrentPosition(0);
-        axes[i].commanded_um = 0;
         axes[i].stutter_steps = umToSteps(STUTTER_INTERVAL_UM, axes[i].steps_per_mm);
+
+        /* A position that survived the power cycle gives this axis a usable
+         * zero without re-homing, which is the whole point — but it is
+         * believed rather than verified, so it is flagged as restored. */
+        if (persist::restored(i)) {
+            const int32_t pos = persist::restoredPosition_um(i);
+            axes[i].commanded_um = pos;
+            axes[i].stepper->setCurrentPosition(umToSteps(pos, axes[i].steps_per_mm));
+            axes[i].flags |= (uint8_t)(AXIS_FLAG_HOMED | AXIS_FLAG_POS_RESTORED);
+        } else {
+            axes[i].stepper->setCurrentPosition(0);
+            axes[i].commanded_um = 0;
+        }
         if (USE_ENABLE_PIN) axes[i].flags |= AXIS_FLAG_ENABLED;
     }
 }
@@ -337,7 +362,13 @@ void service()
 {
     for (uint8_t i = 0; i < AXIS_COUNT; i++) {
         serviceAxis(axes[i]);
-        if (axes[i].phase != PH_IDLE) axes[i].flags |= AXIS_FLAG_MOVING;
+        if (axes[i].phase != PH_IDLE) {
+            axes[i].flags |= AXIS_FLAG_MOVING;
+        } else if (axes[i].flags & AXIS_FLAG_HOMED) {
+            /* Cheap when nothing changed; persist.cpp decides when a record is
+             * actually worth burning. */
+            persist::note(i, axes[i].commanded_um, true);
+        }
     }
 }
 
@@ -349,7 +380,9 @@ bool home(uint8_t axis)
     axis_t &a = axes[axis];
     if (a.phase != PH_IDLE) return false;
 
-    a.flags &= (uint8_t)~(AXIS_FLAG_HOMED | AXIS_FLAG_AT_LIMIT | AXIS_FLAG_FAULT);
+    a.flags &= (uint8_t)~(AXIS_FLAG_HOMED | AXIS_FLAG_AT_LIMIT | AXIS_FLAG_FAULT |
+                          AXIS_FLAG_POS_RESTORED);
+    persist::forget(axis);   /* mid-home there is no trustworthy zero to keep */
     a.home_sample = 0;
     applySpeed(a, a.home_speed_um_s, HOME_ACCEL_UM_S2);
     beginSeek(a);

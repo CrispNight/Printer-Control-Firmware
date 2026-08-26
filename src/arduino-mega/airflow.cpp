@@ -32,6 +32,7 @@ uint8_t  purge_stage;
 bool     valve_open;
 uint16_t purge_target_ppm;
 uint16_t purge_timeout_s;
+uint16_t purge_min_mix_s;
 uint32_t purge_start_ms;      /* of the whole purge, for argon accounting */
 uint32_t stage_start_ms;
 uint16_t purge_open_s;
@@ -140,7 +141,7 @@ void service()
         /* The minimum mix time has to pass before the reading is allowed to
          * end the stage — O2 can read low near the sensor long before the
          * chamber is actually homogeneous. */
-        if (stageElapsed(PURGE_STAGE2_MIN_S) && o2 < purge_target_ppm) {
+        if (stageElapsed(purge_min_mix_s) && o2 < purge_target_ppm) {
             enterStage(PURGE_VERIFY);
             return;
         }
@@ -226,6 +227,9 @@ uint8_t setPurge(const purge_set_t &req)
 
     purge_target_ppm = req.target_o2_ppm ? req.target_o2_ppm : PURGE_TARGET_DEFAULT_PPM;
     purge_timeout_s  = req.timeout_s ? req.timeout_s : PURGE_STAGE2_TIMEOUT_S;
+    /* Skipping the mix minimum is a deliberate testing action, never a
+     * default: the pockets it exists to clear are what ruin a part. */
+    purge_min_mix_s  = (req.flags & PURGE_FLAG_SKIP_MIN_MIX) ? 0 : PURGE_STAGE2_MIN_S;
     purge_result     = PURGE_RESULT_NONE;
     purge_open_s     = 0;
     purge_start_ms   = millis();

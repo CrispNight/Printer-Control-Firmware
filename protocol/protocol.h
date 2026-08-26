@@ -37,7 +37,7 @@ extern "C" {
 
 /* Bump on ANY change to packet layout, message ids, or payload structs.
  * Nodes refuse to talk to a peer reporting a different major version. */
-#define PROTOCOL_VERSION 2
+#define PROTOCOL_VERSION 3
 
 /* --- Packet framing ------------------------------------------------------ */
 
@@ -176,12 +176,22 @@ typedef enum {
 #define AXIS_MOVE_APPROACH_NEG 0x02
 #define AXIS_MOVE_APPROACH_POS 0x04
 
-/* axis_status_t.flags bits */
-#define AXIS_FLAG_HOMED    0x01
-#define AXIS_FLAG_MOVING   0x02
-#define AXIS_FLAG_AT_LIMIT 0x04
-#define AXIS_FLAG_ENABLED  0x08
-#define AXIS_FLAG_FAULT    0x10
+/* axis_status_t.flags bits.
+ *
+ * HOMED means "has a usable zero", which is also true of a position restored
+ * from non-volatile storage after a power cycle. POS_RESTORED says the zero
+ * came back from storage rather than from a home this power cycle: believed,
+ * but not verified, since nothing stops an axis being moved by hand while the
+ * machine is off. A UI should show the two differently.
+ *
+ * Neither bit set means the axis has no zero at all, so software travel limits
+ * cannot be applied to it. */
+#define AXIS_FLAG_HOMED        0x01
+#define AXIS_FLAG_MOVING       0x02
+#define AXIS_FLAG_AT_LIMIT     0x04
+#define AXIS_FLAG_ENABLED      0x08
+#define AXIS_FLAG_FAULT        0x10
+#define AXIS_FLAG_POS_RESTORED 0x20
 
 /* --- Faults -------------------------------------------------------------- */
 
@@ -226,6 +236,13 @@ typedef enum {
     PARK_SUPPLY   = 0x01,  /* needs clearance_um on the return */
     PARK_STAGED   = 0x02,  /* RESERVED — pre-staged pile near the build area */
 } park_mode_t;
+
+/* purge_set_t.flags bits.
+ * The minimum mixing time is not padding: oxygen can read low at the sensor
+ * long before the chamber is homogeneous, and the pockets are what ruin a
+ * part. Skipping it is a deliberate testing action, which is why it is a flag
+ * a caller has to set rather than a value that can drift to zero. */
+#define PURGE_FLAG_SKIP_MIN_MIX 0x01
 
 /* --- Chamber lighting ---------------------------------------------------- */
 
@@ -448,12 +465,13 @@ typedef struct {
     uint16_t valid_mask;
 } sensor_report_t;
 
-/* MSG_PURGE_SET */
+/* MSG_PURGE_SET — starts or aborts the three-stage purge. See PROTOCOL.md;
+ * the stage order is physical, not arbitrary. */
 typedef struct {
-    uint8_t  enable;         /* 0 = close argon solenoid, 1 = open */
-    uint8_t  reserved;
-    uint16_t target_o2_ppm;  /* purge until below this, then hold */
-    uint16_t timeout_s;      /* 0 = no timeout */
+    uint8_t  enable;         /* 0 = abort and close the solenoid, 1 = start */
+    uint8_t  flags;          /* PURGE_FLAG_* */
+    uint16_t target_o2_ppm;  /* stage 2 aim; 0 = the node's default */
+    uint16_t timeout_s;      /* bounds stage 2; 0 = the node's default */
 } purge_set_t;
 
 /* MSG_LASER_ARM — key must equal LASER_ARM_KEY or the packet is refused. */

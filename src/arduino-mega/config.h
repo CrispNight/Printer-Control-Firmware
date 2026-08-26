@@ -193,7 +193,14 @@ static const uint16_t LIGHT_SETTLE_DEFAULT_MS[3] = {0, 1500, 1000};
  * The whole thing takes up to ~40 minutes, which is exactly why it must not
  * depend on a host staying connected. */
 static const uint16_t PURGE_STAGE1_S        = 480;   /* displace: 5+ min, blower off */
-static const uint16_t PURGE_STAGE2_MIN_S    = 60;    /* mix at least this long before the target can end it */
+/* Minimum mixing time before the O2 reading is allowed to end stage 2. The PC
+ * used 60 s; the machine owner wants at least three minutes and preferably
+ * four or five, because oxygen reads low at the sensor long before the chamber
+ * is homogeneous and the leftover pockets are what ruin a part. Five minutes
+ * is the conservative end of that, and it usually costs nothing: stage 2 runs
+ * until the target anyway, so this only bites when O2 falls unusually fast.
+ * PURGE_FLAG_SKIP_MIN_MIX bypasses it for testing. */
+static const uint16_t PURGE_STAGE2_MIN_S    = 300;
 static const uint16_t PURGE_STAGE2_TIMEOUT_S = 1800; /* then move on regardless */
 static const uint16_t PURGE_STAGE3_S        = 30;    /* verification hold */
 
@@ -206,8 +213,36 @@ static const uint16_t PURGE_HOLD_MARGIN_PPM = 2000;
 
 /* Blower duty during and after a purge, per-mille. The PC sent raw PWM: 50 and
  * 94 of 255. */
+/* BLOWER_PRINT_DUTY_PM is MEASURED, not guessed: the chamber airflow was swept
+ * with an anemometer and PWM 94 was the setting that gave the right velocity
+ * over the build area. Every print to date has run at it. Do not "tidy" it to
+ * a round number. A venturi flow meter on its own ESP32 will eventually close
+ * the loop on this (FAN_MODE_CLOSEDLOOP); until then it is open loop at a
+ * value that was verified once. */
 static const uint16_t BLOWER_PURGE_DUTY_PM = 196;  /* PWM 50/255 */
-static const uint16_t BLOWER_PRINT_DUTY_PM = 369;  /* PWM 94/255 */
+static const uint16_t BLOWER_PRINT_DUTY_PM = 369;  /* PWM 94/255 — anemometer-verified */
+
+/* --- Position persistence ------------------------------------------------ */
+
+/* Only the closed-loop pistons are persisted. The recoater is open loop, moves
+ * several times per layer and has a switch at each end, so it is homed every
+ * power cycle instead — which the recoat cycle already requires. Keeping it
+ * out of the store also keeps the write rate to roughly one per layer. */
+static const uint8_t PERSIST_AXIS_COUNT = 2;   /* AXIS_FEED, AXIS_BED */
+
+/* Ring of slots for wear levelling. 128 slots x 14 bytes is 1.75 KB of the
+ * Mega's 4 KB EEPROM, and means any one slot is rewritten only once every 128
+ * records — at roughly one record per layer that is over 12 million layers
+ * against the 100k-cycle endurance. persist.cpp checks the fit at compile
+ * time. */
+static const uint16_t PERSIST_SLOT_COUNT = 128;
+
+/* Every axis has to be still this long before a record is written. */
+static const uint16_t PERSIST_SETTLE_MS = 2000;
+
+/* Changes smaller than this are not worth an EEPROM cycle; this is really just
+ * filtering the step/micrometre rounding. */
+static const int32_t PERSIST_MIN_DELTA_UM = 5;
 
 /* --- Service pacing ------------------------------------------------------ */
 

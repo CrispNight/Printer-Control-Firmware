@@ -1,6 +1,6 @@
 # Moiren SLM — machine communication protocol
 
-**Version 2.** `protocol/protocol.h` is the single source of truth. This
+**Version 3.** `protocol/protocol.h` is the single source of truth. This
 document explains it; it does not define it. If the two disagree, the header
 wins and this file is the bug.
 
@@ -225,6 +225,38 @@ periodic re-homing), `AXIS_BLADE_LIFT` (reserved, not fitted).
 
 **Position authority lives on the Mega.** It tracks where each axis is; the
 host does not. This is the difference that makes PC-free operation possible.
+
+#### Three levels of position trust, and why the top one matters
+
+`axis_status_t.flags` distinguishes them:
+
+| Flags | Meaning |
+|---|---|
+| neither bit | **unknown** — no zero at all. Software travel limits cannot be applied; only the limit switches protect this axis. |
+| `AXIS_FLAG_HOMED` | **homed** — verified against a switch this power cycle. |
+| `HOMED` + `POS_RESTORED` | **restored** — the zero came back from the board's non-volatile store after a power cycle. Believed, not verified: nothing stops an axis being moved by hand while the machine is off. |
+
+Bounds apply to *restored* as well as *homed*, and that is deliberate. **The
+build and supply pistons have a limit switch at the bottom only.** Nothing
+mechanical stops them at the top — driven far enough up they push the weight
+out of the cylinder. The software limit is the sole protection at that end, and
+it needs a zero to measure from, so an axis with no zero is an axis with an
+unprotected top of travel.
+
+The pistons are therefore homed **once** and their positions persist across
+reboots. The recoater is not persisted: it is open loop, it drifts, it moves
+several times per layer, and it has a switch at each end, so it is homed every
+power cycle — which the recoat cycle already requires.
+
+**Unknown is rare by design.** In normal use an axis goes homed → restored →
+restored across reboots and never returns to unknown. It appears on a board
+whose store is blank or corrupt, on an axis that has never been homed, and
+while a home is in progress. To deliberately return to it, home the axis — that
+is also the way to recover after moving something by hand.
+
+**The limit switches are never bypassed.** Whatever the position is believed to
+be, hitting a switch in the direction of travel stops the axis immediately and
+raises `FAULT_LIMIT_UNEXPECT`. No flag, mode or override changes that.
 
 `axis_move_t.flags` can force a direction of approach
 (`AXIS_MOVE_APPROACH_NEG` / `_POS`). The mechanics have real backlash, so the

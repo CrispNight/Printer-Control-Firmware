@@ -12,12 +12,12 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import ClassVar, Tuple
 
-SOURCE_HASH = "2f524a130122d705"  # sha256 of the generated region of protocol.h
+SOURCE_HASH = "98413528e3b3b799"  # sha256 of the generated region of protocol.h
 
 
 # --- Constants -----------------------------------------------------------
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 PACKET_SOF0 = 0xA5
 PACKET_SOF1 = 0x5A
 PACKET_HEADER_LEN = 9
@@ -37,6 +37,7 @@ AXIS_FLAG_MOVING = 2
 AXIS_FLAG_AT_LIMIT = 4
 AXIS_FLAG_ENABLED = 8
 AXIS_FLAG_FAULT = 0x10
+AXIS_FLAG_POS_RESTORED = 0x20
 FAULTBIT_DOOR = 1
 FAULTBIT_OXYGEN = 2
 FAULTBIT_TEMP = 4
@@ -46,6 +47,7 @@ FAULTBIT_GALVO = 0x20
 FAULTBIT_AIRFLOW = 0x40
 FAULTBIT_COMMS = 0x80
 FAULTBIT_ESTOP = 0x100
+PURGE_FLAG_SKIP_MIN_MIX = 1
 LASER_ARM_KEY = 0x4D4F4152
 POINT_FLAG_LASER_ON = 1
 POINT_FLAG_LAST = 2
@@ -751,7 +753,7 @@ class PurgeSet:
     """C `purge_set_t` — 6 bytes on the wire."""
 
     enable: int = 0
-    reserved: int = 0
+    flags: int = 0
     target_o2_ppm: int = 0
     timeout_s: int = 0
 
@@ -761,7 +763,7 @@ class PurgeSet:
     def pack(self) -> bytes:
         return _S_PURGESET.pack(
             self.enable,
-            self.reserved,
+            self.flags,
             self.target_o2_ppm,
             self.timeout_s,
         )
@@ -771,7 +773,7 @@ class PurgeSet:
         v = _S_PURGESET.unpack(data[: cls.SIZE])
         return cls(
             enable=v[0],
-            reserved=v[1],
+            flags=v[1],
             target_o2_ppm=v[2],
             timeout_s=v[3],
         )

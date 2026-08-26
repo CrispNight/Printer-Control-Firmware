@@ -969,41 +969,46 @@ Still open on the Mega, and none of it blocks a print:
   an AVR, and the stock Mega2560 bootloader does not reliably clear `WDRF`, so
   the board can come up in a reset loop needing a manual reflash. Revisit only
   if the bootloader is confirmed watchdog-safe.
-- **Argon consumption is measured but not reported.** The board knows how long
-  the solenoid was open; there is no protocol field to put it in.
 - **The fan tach is not counted**, so `fan_status_t.rpm` is 0. The machine owner
   considers the radiator fan likely to be removed entirely, so this is not
   worth building.
-- **Position is lost across a power cycle.** See below - this is the one that
-  actually matters.
+- **Argon consumption** is measured (solenoid-open seconds) but there is no
+  protocol field to report it in.
 
-#### Position across a power cycle - open design question
+#### Position across a power cycle - done, and it is a safety feature
 
-The pistons are never homed, so after a reboot the board has no idea where they
-are. Today software travel limits are simply skipped on an un-homed axis, which
-is safe but means bounds never apply to the bed or feed in practice. The old
-firmware solved the same problem by compiling in `BED_OVERRIDE`/`FEED_OVERRIDE`/
-`WIPE_OVERRIDE` as permanently true.
+**The build and supply pistons have a limit switch at the BOTTOM ONLY.**
+Confirmed by the machine owner 2026-08-26. Driven far enough up they push the
+weight out of the cylinder and break things, so the software travel limit is
+the only protection at that end - and a software limit needs a zero to measure
+from. An axis with no zero has an unprotected top of travel. That is the real
+hole the old firmware's permanently-on `BED_OVERRIDE` / `FEED_OVERRIDE` left
+open, and it is why position persistence is not a convenience feature.
 
-The machine owner does not want to re-home on every restart and wants this
-changeable at runtime rather than by reflashing, with the access policy
-eventually living on the Teensy behind a user level. Proposed shape:
+`src/arduino-mega/persist.cpp` keeps the piston positions in EEPROM, so they
+are homed **once** and come back on every boot after that with the upper bound
+enforced throughout. Three trust levels, reported in `axis_status_t.flags`:
+unknown / homed / restored, the last being `HOMED | POS_RESTORED`. Bounds apply
+to restored as well as homed. Details in `PROTOCOL.md`.
 
-1. **Persist position to EEPROM**, written when an axis has been idle a couple
-   of seconds and the value changed, wear-levelled across a ring of slots. At
-   ~1 write per axis per layer, a 64-slot ring is roughly 6000 thousand-layer
-   prints against the 100k-cycle endurance.
-2. **Three trust levels, not two:** unknown / restored-from-EEPROM / homed.
-   Bounds apply to restored as well as homed; only homed claims verification,
-   because nothing stops an axis being moved by hand while powered off. Needs a
-   new `AXIS_FLAG_POS_RESTORED` bit - which is what the UI would show as
-   "restored, not homed" per axis on startup.
-3. **A per-move bounds escape** (`AXIS_MOVE_NO_BOUNDS`) replacing the
-   compile-time override, so the mechanism is on the Mega and the policy is in
-   the message.
+The recoater is deliberately not persisted - open loop, drifts, moves several
+times per layer, and has a switch at each end so homing it is quick.
 
-Items 2 and 3 both add flag bits, so they are one `PROTOCOL_VERSION` bump to 3,
-not two.
+Writes go one EEPROM byte per `service()` call, gated on `eeprom_is_ready()`:
+a byte takes ~3.3 ms to burn, so writing a 14-byte record in one go would stall
+the stepper service for ~45 ms. A record is only queued once every axis has
+been still for two seconds and something actually changed, which works out at
+roughly one per layer. 128 slots of wear levelling puts that over 12 million
+layers against the 100k-cycle endurance.
+
+**Still not built, deliberately:** the per-move bounds escape
+(`AXIS_MOVE_NO_BOUNDS`). Once the pistons keep their zero across reboots, the
+case for it largely evaporates - it was only needed because bounds could never
+apply. The machine owner raised a caution about it, and it is the one part of
+the original proposal that could actually drive a piston into the top of its
+travel. Revisit only with a concrete need. Note that the limit switches are
+unconditional either way: nothing in the firmware can make a switch not stop an
+axis.
 
 ### Teensy - ported and building, speaks no protocol yet
 
