@@ -23,29 +23,59 @@ notes:
 | MCP4921 write | 16 bits @ 5 MHz ≈ 3.2 µs |
 | GP8211S write | I²C 400 kHz, multi-byte ≈ 25 µs |
 
+
+## Status index
+
+Read this table first. The detail is below; each heading carries its state.
+
+| State | Meaning |
+|---|---|
+| `[DONE]` | implemented and committed - the detail here is history |
+| `[QUEUED]` | decided, waiting on the version 2 change (section 18) |
+| `[FACT]` | verified hardware or code truth; nothing to implement |
+| `[OPEN]` | genuinely unresolved, needs a measurement or a decision |
+| `[ELSEWHERE]` | belongs in the board or PC repo, not this one |
+| `[SUPERSEDED]` | kept only so the old conclusion does not mislead |
+
+| # | Section | State |
+|---|---|---|
+| 1 | Frame renamed to data packet | `[DONE]` |
+| 2 | Group vectors by laser parameters | `[QUEUED]` docs |
+| 3 | Buffer depth and power timing are one question | `[OPEN]` needs bench measurement |
+| 4 | Fractional position accumulation | `[QUEUED]` firmware |
+| 5 | Delay compensation is one signed number | `[QUEUED]` `MSG_TIMING_OFFSET` |
+| 6 | DMA-driven DAC, and the chip-select pin | `[FACT]` + `[ELSEWHERE]` board |
+| 7 | The 100 kHz figure reconciled | `[FACT]` |
+| 8 | Where layer data lives | `[SUPERSEDED]` by section 19 |
+| 9 | Carried-over items from the port | `[OPEN]` three small follow-ups |
+| 10 | Verified Teensy 4.1 pin tables | `[FACT]` + `[ELSEWHERE]` board |
+| 11 | Two-head expansion, v0.2 pin checklist | `[ELSEWHERE]` board |
+| 12 | PSRAM is for job data | `[ELSEWHERE]` board |
+| 13 | CAN as the inter-board transport | `[QUEUED]` docs + `[ELSEWHERE]` board |
+| 14 | Recoat sequence | `[QUEUED]` struct + docs |
+| 15 | Field correction format and the silent bug | `[FACT]` + `[QUEUED]` messages |
+| 16 | The .cor files hold no distortion data | `[FACT]` + `[OPEN]` characterisation |
+| 17 | What the old handler revealed | `[FACT]` + `[QUEUED]` gaps |
+| 18 | **Version 2 checklist - the working queue** | - |
+| 19 | Job file on SD, and the print log | `[QUEUED]` |
+
+**Lifecycle:** when something is implemented it leaves this file. The decision
+lives in `PROTOCOL.md` or the code from then on, and its section here collapses
+to a one-line pointer. This document should shrink as work lands, not grow.
+
 ---
 
-## 1. "Frame" is overloaded — rename the protocol one
+## 1. Frame renamed to data packet  `[DONE]`
 
-Two unrelated things currently share the word, thousands of times apart in rate:
+Done in commit `d8b41b4`. `packet_t`, `PACKET_SOF0`, `PACKET_MAX_PAYLOAD`;
+`MoirenLink` kept as the transport object. Verified mechanical by diffing the
+encoded bytes before and after, so `PROTOCOL_VERSION` stayed at 1.
 
-- **XY2-100 frame** — one position word to the galvo, every 10–40 µs.
-- **Protocol frame** — one message packet between boards or to the PC.
+`PROTOCOL.md` is now the reference. Rejected alternatives, for the record:
+"USB packet" (transport-specific, and CAN is now in the picture) and "Moiren
+packet" (the project name is wanted for higher-level things).
 
-**Decided 2026-08-26:** the XY2-100 "frame" is externally defined by the galvo
-spec, so ours is the one that moves. It becomes a **data packet**.
-
-- Docs: "data packet" on first use, "packet" thereafter.
-- Code: `packet_t`, `PACKET_SOF0`, `PACKET_MAX_PAYLOAD`.
-- `MoirenLink` keeps its name — that is the transport object, not the packet.
-- Rejected: "USB packet" (transport-specific, and CAN is now in the picture),
-  "Moiren packet" (the project name is wanted for higher-level things).
-
-Gives a clean two-level split: a **message** is what you are saying
-(`MSG_AXIS_MOVE`); a **packet** is the envelope it travels in. Not yet done —
-it is a `PROTOCOL_VERSION` bump, cheap now.
-
-## 2. Per-vector power — group by parameters, don't tag every point
+## 2. Per-vector power — group by parameters, don't tag every point  `[QUEUED]`
 
 The slicer exports a DXF stack; each vector carries its own speed and power in
 extended DXF data. Most vectors share values, and a curved contour holds
@@ -63,7 +93,7 @@ message regardless of vector count. No protocol change needed.
 The only case that would force per-point power is ramping power *within* a
 single vector. Not currently required — confirm before designing for it.
 
-## 3. Buffer depth and power timing are the same question
+## 3. Buffer depth and power timing are the same question  `[OPEN]`
 
 Total buffered time **is** the latency between deciding something and it
 reaching the galvo. Section count determines how much of that total is
@@ -106,7 +136,7 @@ reads, and the drift monitor. Changing the buffering during a port would mean
 changing two things at once. Make section count and size named constants first,
 then change buffering as its own step with the monitor watching.
 
-## 4. Fractional position accumulation
+## 4. Fractional position accumulation  `[QUEUED]`
 
 At 1000 mm/s and the 100 kHz target the galvo advances **3.75 counts per
 frame** — a fraction, not an integer.
@@ -123,7 +153,7 @@ The interpolator must carry sub-count precision and round only at output.
 Stepping in whole counts gives stair-stepping at speed and stalling when slow.
 Easy to get wrong, cheap to get right first time.
 
-## 5. Delay compensation — one signed number, not several
+## 5. Delay compensation — one signed number, not several  `[QUEUED]`
 
 There are unknown latencies on both paths: Teensy → analog voltage at the laser
 power input, and Teensy → mirror actually moving. Neither is well characterised.
@@ -152,7 +182,7 @@ a completely different, spatial thing.
 If power ends up stored as a parallel array alongside position, applying the
 offset is an array index shift — essentially free.
 
-## 6. DMA-driven DAC — possible, unverified, not the first move
+## 6. DMA-driven DAC, and the chip-select pin  `[FACT]` `[ELSEWHERE]`
 
 `dac.cpp` today does a blocking `SPI1.transfer16()` from `loop()`, with CS
 toggled by `digitalWriteFast`. No DMA anywhere.
@@ -222,7 +252,7 @@ Shrink the buffers and apply power at refill boundaries. No new DMA plumbing, no
 LPSPI register work, no bodge wire. Escalate to DMA only if the bench shows it
 isn't tight enough.
 
-## 7. Reconciling the 100 kHz figure in board NOTES.md §8b
+## 7. Reconciling the 100 kHz figure in board NOTES.md §8b  `[FACT]`
 
 §8b argues for SPI over I²C on the basis that per-vector power updates could
 approach 100 kHz.
@@ -239,7 +269,13 @@ So the bandwidth argument alone does not decide it. Resolution favours the
 15-bit GP8211S over the 12-bit MCP4921; DMA-ability (§6) favours the MCP4921.
 **Worth adding to §8b so the comparison isn't made on throughput alone.**
 
-## 8. Where layer data lives
+## 8. Where layer data lives  `[SUPERSEDED]` — see section 19
+
+> **Superseded.** This section concluded that a whole layer should be loaded
+> into Teensy RAM. That holds only for simple parts: an intricate layer can run
+> to 200,000 points, which is 1.8 MB and nowhere near fits. The job now lives on
+> the microSD card and layers stream from there. See section 19. The reasoning
+> below is kept because the arithmetic is still correct for the simple case.
 
 A ~20 000-vector layer is roughly **180 KB**. The build currently leaves
 ~380 KB free in RAM2, so a whole layer fits alongside the 128 KB of DMA
@@ -259,7 +295,7 @@ distinction should be explicit in `PROTOCOL.md`; it currently is not.
 The microSD slot becomes the answer later, for running with no PC at all —
 same layer format, different source, same code path downstream.
 
-## 9. Carried-over items from the port
+## 9. Carried-over items from the port  `[OPEN]`
 
 Recorded in the port commit, repeated here so they aren't lost:
 
@@ -274,7 +310,7 @@ Recorded in the port commit, repeated here so they aren't lost:
   physical position. A boot banner reporting which DAC the build expects would
   turn a silent dead output into an obvious message.
 
-## 10. Verified Teensy 4.1 pin facts
+## 10. Verified Teensy 4.1 pin facts  `[FACT]` `[ELSEWHERE]`
 
 Extracted from the Teensy core, scoped to the `ARDUINO_TEENSY41` block of
 `cores/teensy4/core_pins.h` (the file holds separate tables for 4.0, 4.1 and
@@ -327,7 +363,7 @@ One at a time.
 
 Pins 42–47 are the microSD socket.
 
-## 11. Two-head expansion — what v0.2 should leave open
+## 11. Two-head expansion — what v0.2 should leave open  `[ELSEWHERE]`
 
 Two heads is the natural maximum on this MCU. Beyond that it is a different
 board and probably a different microcontroller.
@@ -372,7 +408,7 @@ Two caveats:
 4. Keep pin 0 free — alternate PCS0 routing, and Serial1 RX.
 5. Consider an MCP4922 (or dual) footprint so two heads need no second SPI port.
 
-## 12. PSRAM — for job data, not DMA buffers
+## 12. PSRAM — for job data, not DMA buffers  `[ELSEWHERE]`
 
 Teensy 4.1 has two underside QSPI footprints, so 8 MB or 16 MB of PSRAM.
 
@@ -389,7 +425,7 @@ marking path — the SD slot becomes a *loading* mechanism rather than a
 real-time one, which is a much easier thing to get right.
 
 
-## 13. CAN as the inter-board transport
+## 13. CAN as the inter-board transport  `[QUEUED]` `[ELSEWHERE]`
 
 UART over 1-2 m in a machine with steppers, a fibre laser and pumps is a poor
 bet. The ESP32 in particular has to sit within inches of the airflow sensor
@@ -456,7 +492,7 @@ controllers with a 3.3 V transceiver instead.
 Check the crystal on any MCP2515 module - they ship with 8 MHz or 16 MHz, and
 the bit-timing registers differ. Wrong value looks like a dead bus.
 
-## 14. Recoat sequence
+## 14. Recoat sequence  `[QUEUED]`
 
 Confirmed with the machine owner on 2026-08-26. Order matters and the struct
 alone does not convey it, so it belongs in `PROTOCOL.md`.
@@ -518,7 +554,7 @@ message.
 Commanding the recoater to an arbitrary absolute position already works via
 `MSG_AXIS_MOVE` with `AXIS_WIPE`.
 
-## 15. Field correction table - format, and the bug to avoid
+## 15. Field correction table - format, and the bug to avoid  `[FACT]` `[QUEUED]`
 
 Distinct from the timing offset (section 5). This one is **spatial**: a 65 x 65
 grid of position offsets correcting f-theta lens distortion. Recalculated
@@ -703,7 +739,7 @@ A one-line check against any real `.cor`. Given SLM spot sizes of 50-100 um and
 layer thickness in the tens of microns, bilinear is expected to clear this
 comfortably - but it is now a measurement rather than an opinion.
 
-## 16. The existing correction files contain no distortion data
+## 16. The existing correction files contain no distortion data  `[FACT]` `[OPEN]`
 
 Measured 2026-08-26 against all three files in the old repo. Every one is a
 **pure linear ramp** - constant first difference, second difference exactly
@@ -756,7 +792,7 @@ in the old repo - it may already fit a table from measured points, and would be
 better reused than reinvented.
 
 
-## 17. What the old PC handler and Mega firmware revealed
+## 17. What the old PC handler and Mega firmware revealed  `[FACT]` `[QUEUED]`
 
 Read 2026-08-26: `Laser_controller_and_arduino/Arduino_HandlerV2.py` (the PC to
 Arduino command layer) and the command parser in `Arduino_Trimmed_Program.ino`.
@@ -863,53 +899,162 @@ numbers and acks make it structurally impossible.
 | No re-home policy | interval expressible, and schedulable during a mark |
 | `valid_mask` cannot express "overridden" | add an override mask, and report the true reading alongside the substituted one |
 
-## 18. Consolidated PROTOCOL_VERSION 2 checklist
+## 18. Version 2 checklist - the working queue
 
-One place to work from. Nothing here is applied yet - `protocol.h` and
-`PROTOCOL.md` are still at version 1 as originally written.
+One place to work from. `protocol.h` and `PROTOCOL.md` are at version 1.
 
-### Commit A - mechanical rename only
+### Commit A - mechanical rename  `[DONE]`
 
-- `frame` to `packet` throughout: `packet_t`, `PACKET_SOF0`,
-  `PACKET_MAX_PAYLOAD`, `MoirenFrame` to `MoirenPacket`. `MoirenLink` keeps its
-  name.
-- Same rename through `PROTOCOL.md`.
-- Regenerate `protocol.py`; `tools/test_protocol.py` must still pass.
-- No semantic change whatsoever, so the large diff is provably mechanical.
+Landed as `d8b41b4`. See section 1.
 
-### Commit B - semantic changes, bump to version 2
+### Commit B - semantic changes, bump to version 2  `[QUEUED]`
 
 **New messages**
-- `MSG_TIMING_OFFSET` - laser lead/lag in samples (section 5), default 0.
-- `MSG_FIELD_CORRECTION_BEGIN` / `_DATA` / `_END` - atomic table transfer
-  carrying grid size, **field scale**, and whole-table CRC (section 15).
-- `MSG_LIGHT_SET` - `ambient` / `shadow` / `off` plus settle delay (section 17).
+
+| Message | Purpose | Section |
+|---|---|---|
+| `MSG_TIMING_OFFSET` | laser lead/lag in samples, default 0 | 5 |
+| `MSG_FIELD_CORRECTION_BEGIN` / `_DATA` / `_END` | atomic 65x65 table upload, carries field scale and whole-table CRC | 15 |
+| `MSG_LIGHT_SET` | `ambient` / `shadow` / `off` plus settle delay | 17 |
+| `MSG_SENSOR_OVERRIDE` | which channels are overridden, substituted **and** true values; sent on connect and on change, not every report | 17 |
+| `MSG_JOB_UPLOAD_BEGIN` / `_DATA` / `_END` | write a job file to the microSD card | 19 |
+
+**Removed**
+
+- `MSG_MARK_BATCH` - jobs now live on the card. Uploading and printing are
+  separate operations, so no single message both carries vectors and fires the
+  laser. `MSG_JOB_START` names a job on the card; `MSG_MARK_ABORT` stays.
 
 **Struct changes**
+
 - `recoat_cycle_t`: park mode (`PARK_OVERFLOW` / `PARK_SUPPLY` / `PARK_STAGED`),
-  clearance drop, settle time.
+  clearance drop, settle time (default 2000 ms).
 - `axis_move_t`: approach-direction flag for anti-backlash.
-- `sensor_report_t`: override mask alongside `valid_mask`, so an overridden
-  sensor reports both the substituted and the true value.
 - `fan_set_t` / `fan_status_t`: address chamber blower and radiator fan
-  separately.
+  separately. The radiator fan is not currently wired (section 17).
 - Axis enum: reserve `AXIS_BLADE_LIFT` while it is free.
 
-**Semantics and documentation**
-- `MSG_MARK_BATCH` is a **load**, not a play (section 8).
-- Group vectors by laser parameters rather than per-point power (section 2).
-- Per-transport framing: USB serial vs CAN (section 13).
-- Redraw the current-versus-target wiring diagram with **CAN**, not UART.
-- Document the recoat sequence order and that the Mega owns it (section 14).
-- Field scale sanity band: **33 mm to 300 mm**, i.e. roughly **218-1986
-  counts/mm**. A header scale of exactly `1.0` is the known placeholder - flag
-  it loudly, propose the implied conversion from the table ramp, and re-check
-  the result against the band rather than silently accepting or silently
-  fixing.
+**Documentation**
 
-### Not protocol - porting constraints to carry into the firmware
+- Redraw the current-versus-target wiring diagram with **CAN**, not UART.
+- Per-transport framing: USB serial versus CAN (section 13).
+- Recoat sequence order, and that the Mega owns the whole cycle (section 14).
+- Group vectors by laser parameters rather than per-point power (section 2).
+- Job file structure and SD streaming (section 19).
+- Field scale sanity band: **33 mm to 300 mm**, roughly **218-1986 counts/mm**.
+  A header scale of exactly `1.0` is the known placeholder - flag it loudly,
+  propose the conversion implied by the table ramp, and re-check the result
+  against the band rather than silently accepting or silently fixing.
+
+Then bump `PROTOCOL_VERSION` to 2, regenerate, extend `tools/test_protocol.py`.
+Run `gen_protocol.py --check`, not just the test script - the test prints the
+*stored* hash and will pass on a stale generated file.
+
+### Not protocol - porting constraints for the firmware  `[QUEUED]`
 
 - **Motion must be non-blocking.** Prerequisite for `MSG_ESTOP`, for live
-  interlock checks during moves, and for re-homing during a mark.
-- **Never drain and discard the input buffer.**
+  interlock checks during moves, and for re-homing the wiper during a mark.
+- **Never drain and discard the input buffer** (section 17).
 - **Position authority lives on the Mega**, not the host.
+- **SD reads happen in the main loop, never in the DMA refill ISR.**
+
+## 19. Job file on SD, and the print log  `[QUEUED]`
+
+The printer must run a job with no PC attached, so **the job lives on the
+Teensy's microSD card**. The PC uploads it once; printing reads from the card.
+
+This replaces the load-into-RAM model of section 8, which only worked for
+simple parts.
+
+### Two phases, cleanly separated
+
+| Phase | Path | Real-time? |
+|---|---|---|
+| **Upload** | PC -> Teensy -> microSD, whole job, once | No. Verify, retry, take as long as needed. |
+| **Print** | SD -> vector buffer -> interpolator -> sample ring -> DMA | Yes, but no PC anywhere in it. |
+
+Because verification no longer competes with marking, the atomic-commit
+guarantee holds without compromise: transfer, verify, and only then mark the
+job valid. **A failed transfer never becomes a printable job.**
+
+### Job file structure
+
+```
+header        printer metadata, layer count, layer offset index
+layer 0       CRC + vector data
+layer 1       CRC + vector data
+...
+```
+
+**Two CRCs, doing different jobs:**
+
+- **Whole-file CRC** - proves the *upload* arrived intact. Checked once at
+  `UPLOAD_END`.
+- **Per-layer CRC** - proves the layer is intact **when read back**, which is
+  the one that actually protects a print. A card can develop bad sectors weeks
+  after the file was written correctly; a check at upload time says nothing
+  about a read three weeks later. Checked at read, so the Teensy faults
+  *before* melting a corrupt layer.
+
+The layer offset index also gives seeking - jump to any layer, which is what
+resuming after a pause or fault needs.
+
+### Buffer chain and sizing
+
+```
+SD card  ->  vector buffer  ->  interpolator  ->  sample ring  ->  DMA
+             ~8192 points                        small, see section 3
+```
+
+Worst-case consumption is 0.5 mm vectors at 2000 mm/s, about **4,000
+vectors/second**; typical is nearer 1,000.
+
+| Vector buffer | RAM | Cushion (typical / worst) |
+|---|---|---|
+| 4,096 points | 48 KB | 4 s / 1 s |
+| **8,192 points** | **96 KB** | **8 s / 2 s** |
+| 16,384 points | 192 KB | 16 s / 4 s |
+
+**8,192 points is the starting figure.** SD stalls are typically under 100 ms
+and occasionally 250 ms, so two seconds of worst-case cushion is a wide margin.
+Refill below half, reading ~12 KB at a time - 24 sectors, efficient for the
+card and short enough not to stall the loop.
+
+**It is effectively free.** The sample ring is 128 KB today and section 3
+already wants it far smaller for power-timing alignment. Dropping to 512 frames
+per half is 8 KB, releasing **120 KB** - more than the 96 KB this needs. The
+change wanted for laser timing funds the buffer needed for SD streaming.
+
+Make both sizes named constants so they stay tunable.
+
+### Print log
+
+Recorded per job on the card, for correlating with layer images and video
+afterwards, and for working out where the time actually goes.
+
+- **Fixed-size binary records**, not text - trivial to parse, cheap to write,
+  no formatting cost in the loop.
+- **Periodic samples at ~1 Hz**: oxygen, airflow, temperatures, fan state.
+  Nothing here changes fast enough to need more.
+- **Timestamped events**: mark start and end, recoat start and end, faults.
+  These are what yield the efficiency analysis - mark time versus recoat time
+  versus idle, per layer, straight out of the timestamps.
+- Motor load slots in later as another field once encoders report it.
+
+**Sizing:** ~32 bytes per record at 1 Hz is ~115 KB/hour, so a 10-hour print is
+about 1 MB. A ring of 128 records is 4 KB of RAM and flushes roughly once a
+minute.
+
+**Flush when half full - do not wait for the recoat dwell.** An earlier draft
+said never write during marking; that was over-cautious. A worst-case SD stall
+is ~250 ms against 2-8 seconds of vector cushion, so a log write during a mark
+is comfortably absorbed. Waiting for the dwell would mean buffering a whole
+layer, which for a dense 5-10 minute layer is real RAM for no benefit.
+
+### Rejected: exposing the card as a USB drive
+
+Teensyduino can present the card as mass storage or MTP alongside serial, which
+would let the PC copy a job by drag and drop. Rejected: the Teensy loses control
+of validation, the card must be unmounted before printing, and transferring a
+DXF stack over the protocol is quick enough that the convenience is not worth
+it.
