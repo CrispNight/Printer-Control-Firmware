@@ -144,18 +144,69 @@ offset is an array index shift — essentially free.
 toggled by `digitalWriteFast`. No DMA anywhere.
 
 Sample-exact power alignment would need the DAC fed by DMA in lockstep with the
-position stream. That means driving LPSPI registers directly so the peripheral
-pulses CS per word, which requires **pin 32 to be a hardware PCS pin for that
-LPSPI instance**. The board notes call it `OUT1B`, which reads like plain GPIO.
+position stream.
 
-**Unverified against the i.MX RT1062 pin mux table. Check before relying on it.**
+### The DMA side is available
 
-If it holds, being DMA-able alongside the position stream is a stronger argument
-for the MCP4921 over the GP8211S than raw throughput is.
+The RT1062 has 32 eDMA channels; the galvo engine uses one. Channel count is not
+a constraint.
 
-Cheaper first step: shrink the buffers and apply power at refill boundaries.
-No new DMA plumbing, no LPSPI register work, no pin-mux dependency. Escalate
-only if the bench shows it isn't tight enough.
+Trigger the power channel by **eDMA channel linking** — the position channel's
+minor-loop completion hardware-triggers the power channel, giving one power word
+per galvo frame with no drift. Do *not* point two DMAMUX channels at the same
+FlexIO request: the shifter request is cleared when serviced, so the channels
+would race and silently drop transfers.
+
+*To verify in the reference manual:* with `ELINK` set, `CITER`/`BITER` narrow
+from 15 bits to 9 (the link channel number takes the space), capping the major
+loop at **511** iterations instead of 32767. The major loop is 8192 today, so
+linking would force sections ≤511 frames — 5.1 ms lookahead at 100 kHz. The
+constraint and §3's goal point the same way.
+
+Two channels can share one buffer (interleaved `[X, Y, POWER]` records, or
+parallel arrays). One channel cannot feed both peripherals: FlexIO2 and LPSPI3
+are far apart in the address map and `DMOD` only wraps inside a small
+power-of-two window.
+
+Apply the §5 lead/lag offset by writing power values **pre-shifted** during
+refill, rather than by staggering DMA start times. Exact, runtime-adjustable,
+no DMA complexity.
+
+### The blocker is the CS pin — VERIFIED
+
+The MCP4921 latches on CS rising edge, so every word needs its own pulse. LPSPI
+does that natively: set `TCR` once with `CONT=0` and each `TDR` write produces a
+framed transfer with PCS pulsing. **But only on a hardware PCS pin.**
+
+Teensy 4.1 hardware CS pins, from `SPI.cpp` in the Teensy core
+(`libraries/SPI/SPI.cpp`, the `ARDUINO_TEENSY41` hardware structs):
+
+| Port | Peripheral | Hardware CS pins |
+|---|---|---|
+| `SPI` | LPSPI4 | 10, 37, 36 |
+| **`SPI1`** | **LPSPI3** | **0, 38** |
+| `SPI2` | LPSPI1 | 44 |
+
+The DAC sits on SPI1 (MOSI1 = 26, SCK1 = 27) with **CS on pin 32, which is not
+a PCS pin for LPSPI3** — hence the `digitalWriteFast` in `dac.cpp`. Moving to
+another LPSPI is not possible either, since 26/27 are LPSPI3-only.
+
+**This is a board routing question, not a chip choice.** The MCP4921 is fine.
+
+Of the two candidates, `pins.h` shows **pin 38 is taken**
+(`kPinLmInterlockN`) and **pin 0 is free**. A bodge from 32 to 0 on v0.1 would
+unlock hardware PCS and therefore DMA; v0.2 could route it properly.
+
+Weigh before claiming pin 0: it is **Serial1 RX**, and Serial1 is the obvious
+candidate for the inter-board link once the Teensy becomes master. Serial2
+(pins 7/8) is free and unused on this board, so there is an out — but it should
+be a deliberate choice.
+
+### Cheaper first step
+
+Shrink the buffers and apply power at refill boundaries. No new DMA plumbing, no
+LPSPI register work, no bodge wire. Escalate to DMA only if the bench shows it
+isn't tight enough.
 
 ## 7. Reconciling the 100 kHz figure in board NOTES.md §8b
 
