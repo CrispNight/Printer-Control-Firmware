@@ -1,0 +1,11 @@
+CompileFlags:
+  Compiler: C:/Users/bradf/.platformio/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-gcc.exe
+  Remove:
+    - -mfloat-abi=*
+    - -mfpu=*
+    - -mcpu=*
+    - -mthumb
+Diagnostics:
+  Suppress:
+    - drv_unknown_argument
+    - ovl_diff_return_type

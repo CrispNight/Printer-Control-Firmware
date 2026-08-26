@@ -1,0 +1,8 @@
+{
+  "clangd.arguments": [
+    "--query-driver=C:/Users/bradf/.platformio/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-gcc.exe",
+    "--compile-commands-dir=${workspaceFolder}",
+    "--background-index",
+    "--header-insertion=never"
+  ]
+}
