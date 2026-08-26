@@ -1,0 +1,18 @@
+# Normalise line endings so firmware sources are identical regardless of the
+# machine that committed them. Checked in as LF; checked out native on Windows.
+* text=auto
+
+*.c    text
+*.h    text
+*.cpp  text
+*.py   text
+*.ini  text
+*.md   text
+*.json text
+*.yml  text
+
+# Build artefacts and firmware images are never text.
+*.hex  binary
+*.bin  binary
+*.elf  binary
+*.cor  binary
