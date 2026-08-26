@@ -32,9 +32,18 @@ Two unrelated things currently share the word, thousands of times apart in rate:
 - **XY2-100 frame** — one position word to the galvo, every 10–40 µs.
 - **Protocol frame** — one message packet between boards or to the PC.
 
-**Intended change:** rename the protocol-level one to **packet** throughout
-`PROTOCOL.md`. Not yet done. The C identifiers (`FRAME_SOF0`, `MoirenFrame`)
-would follow, which is a `PROTOCOL_VERSION` bump — cheap now, annoying later.
+**Decided 2026-08-26:** the XY2-100 "frame" is externally defined by the galvo
+spec, so ours is the one that moves. It becomes a **data packet**.
+
+- Docs: "data packet" on first use, "packet" thereafter.
+- Code: `packet_t`, `PACKET_SOF0`, `PACKET_MAX_PAYLOAD`.
+- `MoirenLink` keeps its name — that is the transport object, not the packet.
+- Rejected: "USB packet" (transport-specific, and CAN is now in the picture),
+  "Moiren packet" (the project name is wanted for higher-level things).
+
+Gives a clean two-level split: a **message** is what you are saying
+(`MSG_AXIS_MOVE`); a **packet** is the envelope it travels in. Not yet done —
+it is a `PROTOCOL_VERSION` bump, cheap now.
 
 ## 2. Per-vector power — group by parameters, don't tag every point
 
@@ -132,8 +141,13 @@ This is distinct from `on_delay_us` / `off_delay_us` / `poly_delay_us` in
 mirror settle. The offset here is a *systematic hardware* correction, set once
 per machine, not per job.
 
-**Intended change:** add `MSG_GALVO_CAL` carrying this offset, plumbed but
+**Intended change:** add `MSG_TIMING_OFFSET` carrying this offset, plumbed but
 defaulting to zero. Needs a `PROTOCOL_VERSION` bump.
+
+Called `MSG_GALVO_CAL` in an earlier draft, which was wrong twice over: it is an
+*offset*, not a calibration (you calibrate once and transmit the result), and
+"galvo cal" collided with the **field correction** table (section 15), which is
+a completely different, spatial thing.
 
 If power ends up stored as a parallel array alongside position, applying the
 offset is an array index shift — essentially free.
@@ -373,3 +387,203 @@ per layer, 16 MB holds roughly 90 layers uncompressed.
 That makes an entire print job resident in RAM with no PC and no SD card in the
 marking path — the SD slot becomes a *loading* mechanism rather than a
 real-time one, which is a much easier thing to get right.
+
+
+## 13. CAN as the inter-board transport
+
+UART over 1-2 m in a machine with steppers, a fibre laser and pumps is a poor
+bet. The ESP32 in particular has to sit within inches of the airflow sensor
+(I2C), so it is a long run through noise. **CAN** is differential, built for
+exactly this, and the data rates involved are tiny.
+
+### Bandwidth - verified, huge headroom
+
+| Traffic | Rate | CAN frames/s |
+|---|---|---|
+| Mega: axis status, 3 axes @ 50 Hz | | ~300 |
+| Mega: sensor report @ 10 Hz (18 B -> 3 frames) | | 30 |
+| Mega: safety status @ 50 Hz | | 50 |
+| ESP32: fan set + status @ 20 Hz | | 40 |
+| Heartbeats, commands, acks | | ~80 |
+| **Total** | | **~500** |
+
+Classic CAN at 500 kbit/s carries ~3,850 frames/s flat out; under 50% bus load
+that is ~1,900. So roughly **a quarter of a conservative budget**, and axis
+status at 50 Hz is the dominant term and easily reduced.
+
+It fits because **the vector stream never touches CAN.** That is the ~180 KB per
+layer and it goes PC to Teensy over USB. CAN carries only motion commands,
+telemetry, safety and fan control. Putting layer data on CAN would be a
+five-second-per-layer mistake.
+
+### Classic CAN, 8 data bytes
+
+CAN FD is out: the Teensy's CAN3 supports it, but the ESP32's TWAI controller
+and the MCP2515 are CAN 2.0 only. So **8 data bytes per frame**.
+
+Payloads needing segmentation: `SysLog` (49 B -> 7 frames), `SysHello` (26 -> 4),
+`SensorReport` (18 -> 3), `AxisMove` (14 -> 2), `RecoatCycle` (12 -> 2),
+`StateReport` (12 -> 2). Everything else fits in one frame. At these rates the
+overhead is irrelevant.
+
+### Framing is per-transport - a correction to the original design
+
+The 9-byte packet header plus 2-byte CRC would be pure waste on CAN: it would
+more than double the traffic and duplicate a CRC the hardware already computes.
+
+**The packet is the logical unit; each transport encodes it natively.**
+
+- **USB serial:** `A5 5A` + header + payload + CRC (what exists today).
+- **CAN:** the 29-bit extended ID carries src/dst/msg/flags, the 8 data bytes
+  are pure payload, hardware CRC, and long payloads segment across frames.
+
+Shared message *definitions*, per-transport *framing*. That is a better
+expression of the transport-agnostic goal than one framing everywhere.
+
+### Hardware
+
+| Node | Controller | Transceiver |
+|---|---|---|
+| Teensy 4.1 | built-in FlexCAN (CAN1/2/3) | needs 3.3 V - SN65HVD230 or TJA1051T/3 |
+| ESP32 | built-in TWAI | needs 3.3 V - same |
+| Mega | **none** - needs MCP2515 over SPI | the module's TJA1050 is fine at 5 V |
+
+**Do not wire an MCP2515 module directly to the Teensy or ESP32.** Those modules
+run the MCP2515 at 5 V and carry a TJA1050, which needs a 5 V supply and whose
+RXD output swings to 5 V. Neither MCU is 5 V tolerant. Use the built-in
+controllers with a 3.3 V transceiver instead.
+
+Check the crystal on any MCP2515 module - they ship with 8 MHz or 16 MHz, and
+the bit-timing registers differ. Wrong value looks like a dead bus.
+
+## 14. Recoat sequence
+
+Confirmed with the machine owner on 2026-08-26. Order matters and the struct
+alone does not convey it, so it belongs in `PROTOCOL.md`.
+
+**Overflow park - the default:**
+
+```
+1. mark layer
+2. build plate drops                    <- this IS the clearance
+3. recoater returns overflow -> supply  <- passes over the lowered build, touches nothing
+4. supply cylinder rises
+5. recoater sweeps supply -> build -> overflow, spreading
+6. mark layer
+```
+
+The build-plate drop does double duty: it makes room for the new layer *and*
+clears the return traverse. Powder is spread only on the forward pass, leaving
+one clean surface.
+
+**Supply park costs two extra moves.** Spreading happens on the forward pass,
+then the recoater must come back over that fresh even layer, needing an extra
+drop-and-raise for clearance.
+
+**The tradeoff is not settled.** Overflow parking is better for surface quality
+but forecloses *pre-staging* - keeping a powder pile just ahead of the print
+area to cut inter-layer time. The owner estimates pre-staging could save 10-20 s
+per layer, which over hundreds or thousands of layers is hours. So park mode
+must be a **per-job parameter, not a compile-time choice**, so the tradeoff can
+be measured rather than argued.
+
+A future blade-lift axis would resolve it properly: raise the blade and do the
+return traverse *during* marking, so it costs no wall-clock at all. That is a
+mechanical change rather than firmware, but the axis enum should leave room.
+
+**Struct changes:** `recoat_cycle_t.flags` becomes an explicit **park mode**
+(`PARK_OVERFLOW` / `PARK_SUPPLY` / `PARK_STAGED`), plus a **clearance drop**
+value for the supply-park return.
+
+**Ownership:** the Mega executes the entire sequence on one `MSG_RECOAT_CYCLE`.
+It owns the axes and limit switches, and the cycle must complete correctly even
+if the link hiccups. Micro-managing six moves over CAN would add a failure point
+at every step. Parameters travel in the message, so the sequence *shape* stays
+selectable without reflashing the Mega - logic with the hardware, policy in the
+message.
+
+Commanding the recoater to an arbitrary absolute position already works via
+`MSG_AXIS_MOVE` with `AXIS_WIPE`.
+
+## 15. Field correction table - format, and the bug to avoid
+
+Distinct from the timing offset (section 5). This one is **spatial**: a 65 x 65
+grid of position offsets correcting f-theta lens distortion. Recalculated
+rarely.
+
+### .cor file format (LMC1COR_1.0)
+
+Decoded from `meerk40t/balormk/controller.py` in the old repo and checked
+against `identity.cor` - the arithmetic closes exactly at 68,128 bytes.
+
+| Offset | Size | Contents |
+|---|---|---|
+| `0x000` | 22 | `LMC1COR_1.0` in UTF-16LE |
+| `0x016` | 506 | header - **scale factor at double index 43** |
+| `0x210` | 67,600 | 65 x 65 points x 2 doubles (dx, dy) |
+
+An older int variant also exists: 14-byte header, 4-byte signed ints.
+
+**Values are 16-bit sign-magnitude, not two's complement.** Doubles are rounded
+to int, then `dx if dx >= 0 else -dx + 0x8000` - bit 15 is a sign *flag*. Easy
+landmine; get it wrong and the field mirrors itself.
+
+The file is 68 KB because it stores doubles. What actually needs transmitting is
+4225 x 2 x 2 bytes = **16.9 KB**, roughly 89 packets at 192-byte payloads.
+
+**Keep the .cor format.** `save_correction_file()` already writes valid files
+readable by EZCAD2, so existing calibration files stay usable. Only the
+transport needs replacing.
+
+### Why the old upload failed silently
+
+```python
+self.write_cor_table(True)
+for dx, dy in table:
+    self.write_cor_line(dx, dy, 0 if first else 1)   # read=False - fire and forget
+status = self.get_list_status()
+if status != ERR: return
+```
+
+4,225 individual USB commands with **no reply read at all**. No index, no
+per-line ack, no checksum. The card just counts them as they arrive.
+
+The single verification is `get_list_status()` at the end, commented as
+*"a live read confirms USB didn't drop packets mid-upload"*. **It does not.** It
+confirms the card is still *responding*, which is a different thing.
+
+Drop one line out of 4,225 and the card accepts 4,224. Every point after the
+drop shifts one grid position. The card answers `get_list_status()` perfectly
+happily. The check passes. The field is silently wrong, with no error anywhere.
+
+This cost about a week to find. The `max_retries=3` wrapper retries on the wrong
+condition and would not have caught it either.
+
+### Replacement: BEGIN / DATA / END
+
+```
+MSG_FIELD_CORRECTION_BEGIN   grid size, table id, CRC of the whole table
+MSG_FIELD_CORRECTION_DATA    chunk index + entries      (repeated)
+MSG_FIELD_CORRECTION_END     commit
+```
+
+The Teensy assembles into a scratch buffer and verifies the whole-table CRC at
+END before swapping it in. Any missing chunk, bad CRC or wrong count rejects the
+**entire** table and keeps the old one.
+
+Three properties, each killing part of the old failure:
+
+1. per-packet CRC - corruption detected rather than absorbed
+2. per-chunk index - a *missing* chunk detected, which is the specific killer
+3. atomic commit - never half-applied
+
+Persist to SD or flash on the Teensy so the calibration survives without a PC.
+
+### Two open questions
+
+- **The scale factor at header double index 43** - how it relates to the
+  firmware's `374.5 counts/mm` field scale. If the .cor file's scale should
+  drive that constant, the two must not be set independently.
+- **Interpolation.** 65 points across +/-30,000 counts is ~937 counts between
+  nodes, so the firmware must interpolate between grid points. The BJJCZ card
+  did this internally; ours will have to, and the method affects accuracy.
