@@ -754,3 +754,162 @@ table.
 **Before building any of this**, read `meerk40t/balormk/correction_fitting.py`
 in the old repo - it may already fit a table from measured points, and would be
 better reused than reinvented.
+
+
+## 17. What the old PC handler and Mega firmware revealed
+
+Read 2026-08-26: `Laser_controller_and_arduino/Arduino_HandlerV2.py` (the PC to
+Arduino command layer) and the command parser in `Arduino_Trimmed_Program.ino`.
+
+Treated as **evidence of what the machine needed, not as a design to copy** -
+the machine owner notes it was written by students working things out. The
+command set and the machine facts are the valuable parts; the structure is not.
+
+### The recoat cycle as actually implemented
+
+```
+1. feeder.moveTo(supply)                       supply rises
+2. bed: overshoot by BACKLASH_MM, then return  anti-backlash
+3. bed.moveTo(build)                           bed drops
+4. delay(2000)                                 RECOAT_SETTLE_MS
+5. wiper -> RECOAT_DISTANCE_MM (285 mm)        forward sweep
+6. delay(500)
+7. wiper -> HOME_OFFSET_MM                     sweeps BACK
+8. every N cycles, re-home the wiper
+```
+
+So the machine currently runs **supply-park with no clearance** - it drags back
+over the freshly powdered bed every layer. That is the variant section 14 says
+costs surface quality.
+
+### Three architectural problems, all confirmed as must-fix
+
+**1. The PC is the position authority.** `build_cur` / `supply_cur` live in the
+Python handler, which computes `build_cur - recoat_build_step` and sends an
+*absolute* target. The Mega does not track position between commands.
+
+The current machine therefore **structurally cannot run without the PC** - not
+as policy, but because the truth lives there. `axis_status_t` carrying position
+on the Mega is the fix.
+
+**2. Motion is fully blocking.** Every move is `while (distanceToGo()) { run(); }`.
+During a move the Mega reads no sensors, checks no interlocks, and **cannot
+receive an emergency stop**; only the limit switch in the loop condition is
+consulted.
+
+**This is a hard porting constraint, not a protocol item.** "`MSG_ESTOP` handled
+first in every handler" is meaningless unless the motion loop is non-blocking.
+The port must restructure motion, not translate it.
+
+**3. `sendSensorData()` discards pending commands.**
+
+```cpp
+while (Serial.available() > 0) {
+    String line = Serial.readStringUntil('\n');
+    line.trim();   // read and thrown away
+}
+```
+
+Any command arriving while a sensor report is being sent is **silently dropped**.
+That is the origin of both the 120-second timeout in the Python handler and the
+"drain stale completions" hack above it - scar tissue from this bug. Sequence
+numbers and acks make it structurally impossible.
+
+### Machine facts worth keeping
+
+- **Build and supply cylinders have encoders and are closed loop. The recoater
+  is an open-loop stepper.** That is why only the wiper needs periodic
+  re-homing - it is the only axis that can drift. May become closed loop later.
+- **Re-homing can move to during the mark.** The recoater's home is at the
+  supply end, off the print bed, so homing it while the laser marks costs zero
+  wall-clock and violates nothing. Requires non-blocking motion (above). The
+  every-N-cycles interval can probably also be relaxed.
+- **The anti-backlash overshoot is real mechanical compensation**, not
+  superstition - the mechanics have genuine backlash. Preserve it.
+- **`RECOAT_SETTLE_MS = 2000`: purpose no longer remembered.** Two seconds per
+  layer is ~33 minutes over 1000 layers, so it is worth understanding. Plausible
+  reason: letting powder and structure settle after the piston moves so stepper
+  vibration does not disturb the bed before the blade sweeps. **Keep the current
+  value as the default and make it a parameter; do not remove it blindly.**
+  Measure before reducing.
+- **The radiator fan is for water cooling the build plate.** Not currently
+  connected - the cylinder adapter is plastic, so water cooling was not
+  feasible. It also served the old laser, which now has its own chiller, so it
+  may be dropped entirely. **Define it in the protocol (cheap) but do not design
+  around it.**
+- **`OXYGEN_OVERRIDE = true` was a testing aid**, so work could continue with a
+  bad sensor. Right handling: keep it compile-time so it cannot be set
+  accidentally, and report it explicitly so the PC UI can show a red warning
+  with *both* the substituted value and the real reading.
+- **The safety pins are inputs.** The Mega *observes* an independent hardware
+  interlock chain rather than driving it, so firmware failure cannot defeat the
+  interlock. Preserve that. Expected to migrate onto the Teensy board later.
+- **Lights have three modes: `ambient`, `shadow`, `off`** (two relays).
+  `shadow` is side-lighting so the camera can see surface topology - that is how
+  recoat defects are spotted.
+- **Lighting needs a settle delay before capture.** The webcam has a physical
+  lens; autofocus, white balance and brightness all take time to adapt. Was
+  handled PC-side. Should become a machine setting the PC can update, since it
+  gets dialled in once and then rarely changes.
+
+### Protocol gaps this exposed
+
+| Gap | Fix |
+|---|---|
+| No light control at all | `MSG_LIGHT_SET` with `ambient`/`shadow`/`off` plus settle delay |
+| One fan, but there are two | split chamber blower from radiator fan (the latter unwired for now) |
+| No approach-direction concept | anti-backlash needs a direction-of-approach flag on moves |
+| Settle time hardcoded | parameter on `recoat_cycle_t`, defaulting to 2000 ms |
+| No re-home policy | interval expressible, and schedulable during a mark |
+| `valid_mask` cannot express "overridden" | add an override mask, and report the true reading alongside the substituted one |
+
+## 18. Consolidated PROTOCOL_VERSION 2 checklist
+
+One place to work from. Nothing here is applied yet - `protocol.h` and
+`PROTOCOL.md` are still at version 1 as originally written.
+
+### Commit A - mechanical rename only
+
+- `frame` to `packet` throughout: `packet_t`, `PACKET_SOF0`,
+  `PACKET_MAX_PAYLOAD`, `MoirenFrame` to `MoirenPacket`. `MoirenLink` keeps its
+  name.
+- Same rename through `PROTOCOL.md`.
+- Regenerate `protocol.py`; `tools/test_protocol.py` must still pass.
+- No semantic change whatsoever, so the large diff is provably mechanical.
+
+### Commit B - semantic changes, bump to version 2
+
+**New messages**
+- `MSG_TIMING_OFFSET` - laser lead/lag in samples (section 5), default 0.
+- `MSG_FIELD_CORRECTION_BEGIN` / `_DATA` / `_END` - atomic table transfer
+  carrying grid size, **field scale**, and whole-table CRC (section 15).
+- `MSG_LIGHT_SET` - `ambient` / `shadow` / `off` plus settle delay (section 17).
+
+**Struct changes**
+- `recoat_cycle_t`: park mode (`PARK_OVERFLOW` / `PARK_SUPPLY` / `PARK_STAGED`),
+  clearance drop, settle time.
+- `axis_move_t`: approach-direction flag for anti-backlash.
+- `sensor_report_t`: override mask alongside `valid_mask`, so an overridden
+  sensor reports both the substituted and the true value.
+- `fan_set_t` / `fan_status_t`: address chamber blower and radiator fan
+  separately.
+- Axis enum: reserve `AXIS_BLADE_LIFT` while it is free.
+
+**Semantics and documentation**
+- `MSG_MARK_BATCH` is a **load**, not a play (section 8).
+- Group vectors by laser parameters rather than per-point power (section 2).
+- Per-transport framing: USB serial vs CAN (section 13).
+- Redraw the current-versus-target wiring diagram with **CAN**, not UART.
+- Document the recoat sequence order and that the Mega owns it (section 14).
+- Field scale sanity band: **33 mm to 300 mm**, i.e. roughly **218-1986
+  counts/mm**. A header scale of exactly `1.0` is the known placeholder - flag
+  it loudly, propose the implied conversion from the table ramp, and re-check
+  the result against the band rather than silently accepting or silently
+  fixing.
+
+### Not protocol - porting constraints to carry into the firmware
+
+- **Motion must be non-blocking.** Prerequisite for `MSG_ESTOP`, for live
+  interlock checks during moves, and for re-homing during a mark.
+- **Never drain and discard the input buffer.**
+- **Position authority lives on the Mega**, not the host.
