@@ -92,13 +92,83 @@ def test_decoder_recovery():
     check(len(dec.feed(wire * 3)) == 3, "three concatenated packets decode")
 
 
+def test_bulk_transfers():
+    """The atomic upload paths: field correction table and job file."""
+    begin = p.FieldCorrBegin(grid_size=65, point_total=65 * 65,
+                             scale_mcpmm=374500, table_crc=0xBEEF)
+    check(p.FieldCorrBegin.unpack(begin.pack()) == begin, "FieldCorrBegin round-trips")
+
+    per_packet = (p.PACKET_MAX_PAYLOAD - p.FieldCorrData.SIZE) // p.FieldCorrPoint.SIZE
+    packets = -(-65 * 65 // per_packet)
+    check(per_packet == 47, f"{per_packet} correction points per packet")
+    check(packets == 90, f"a 65x65 table is {packets} packets")
+
+    pt = p.FieldCorrPoint(dx=-1234, dy=5678)
+    check(p.FieldCorrPoint.unpack(pt.pack()) == pt,
+          "FieldCorrPoint round-trips (plain signed, not sign-magnitude)")
+
+    job = p.JobUploadBegin(job_id=7, total_bytes=1_800_000, layer_count=400,
+                           file_crc=0x1234)
+    check(p.JobUploadBegin.unpack(job.pack()) == job, "JobUploadBegin round-trips")
+    check(p.PACKET_MAX_PAYLOAD - p.JobUploadData.SIZE == 184,
+          "184 job bytes per packet")
+
+
+def test_new_messages():
+    off = p.TimingOffset(laser_lead_samples=-37)
+    check(p.TimingOffset.unpack(off.pack()).laser_lead_samples == -37,
+          "TimingOffset carries a signed lead")
+
+    light = p.LightSet(mode=p.LightMode.SHADOW, settle_ms=1500)
+    check(p.LightSet.unpack(light.pack()) == light, "LightSet round-trips")
+
+    ov = p.SensorOverride(override_mask=0x0001, oxygen_true_ppm=(210000 & 0xFFFF, 0),
+                          temp_true_c_x10=(251, 0, 0, 0, 0, 0))
+    check(p.SensorOverride.unpack(ov.pack()) == ov,
+          "SensorOverride carries the true reading alongside the substituted one")
+
+    rc = p.RecoatCycle(feed_um=75, bed_um=-75, wipe_speed_mm_s=100,
+                       settle_ms=2000, clearance_um=-500, passes=1,
+                       park_mode=p.ParkMode.OVERFLOW)
+    check(p.RecoatCycle.unpack(rc.pack()) == rc, "RecoatCycle round-trips with park mode")
+
+    fan = p.FanSet(fan=p.FanId.RADIATOR, mode=p.FanMode.MANUAL, duty_pm=650)
+    check(p.FanSet.unpack(fan.pack()).fan == p.FanId.RADIATOR,
+          "FanSet addresses a specific fan")
+
+
+def test_job_file_layout():
+    """The on-card format both sides must agree on."""
+    hdr = p.JobFileHeader(magic=b"MOIRENJB", format_version=1, layer_count=400,
+                          job_id=7, layer_thickness_um=75, total_bytes=1_800_000,
+                          file_crc=0x1234)
+    check(p.JobFileHeader.unpack(hdr.pack()).magic == b"MOIRENJB", "job magic survives")
+
+    lay = p.LayerHeader(layer_index=17, group_count=3, byte_count=4096,
+                        z_um=-1275, crc=0xABCD)
+    check(p.LayerHeader.unpack(lay.pack()) == lay, "LayerHeader round-trips")
+    check(p.VectorGroup(point_count=1200).pack() != b"", "VectorGroup packs")
+
+
 def test_invariants():
     check(p.NODE_AIRFLOW == p.NodeId.ARDUINO_MEGA,
           "NODE_AIRFLOW still points at the Mega (update PROTOCOL.md when it moves)")
-    max_points = (p.PACKET_MAX_PAYLOAD - p.MarkBatchHeader.SIZE) // p.VectorPoint.SIZE
-    check(max_points == 20, f"MARK_BATCH holds {max_points} points per packet")
     check(p.PACKET_MAX_LEN == p.PACKET_HEADER_LEN + p.PACKET_MAX_PAYLOAD + p.PACKET_CRC_LEN,
           "PACKET_MAX_LEN agrees with its parts")
+    check(p.PROTOCOL_VERSION == 2, "PROTOCOL_VERSION is 2")
+
+    # 374.5 counts/mm is a 175 mm lens; both ends of the band must bracket it.
+    check(p.FIELD_SCALE_MIN_MCPMM < 374500 < p.FIELD_SCALE_MAX_MCPMM,
+          "the 175 mm lens scale sits inside the sanity band")
+    check(round(65536 / (p.FIELD_SCALE_MIN_MCPMM / 1000)) == 300,
+          "the low scale bound is a 300 mm field")
+    check(round(65536 / (p.FIELD_SCALE_MAX_MCPMM / 1000)) == 33,
+          "the high scale bound is a 33 mm field")
+    check(1000 < p.FIELD_SCALE_MIN_MCPMM,
+          "the 1.0 placeholder scale falls outside the band and is rejected")
+
+    check(not hasattr(p, "MarkBatchHeader"),
+          "MSG_MARK_BATCH is gone; vectors travel as a job file")
 
     oversized = p.Packet(payload=b"\x00" * (p.PACKET_MAX_PAYLOAD + 1))
     try:
@@ -111,7 +181,8 @@ def test_invariants():
 
 def main():
     tests = [test_crc, test_struct_roundtrip, test_packet_roundtrip,
-             test_decoder_recovery, test_invariants]
+             test_decoder_recovery, test_bulk_transfers, test_new_messages,
+             test_job_file_layout, test_invariants]
     for test in tests:
         print(f"{test.__name__}:")
         test()

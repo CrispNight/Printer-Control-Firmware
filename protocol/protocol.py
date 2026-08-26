@@ -12,12 +12,12 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import ClassVar, Tuple
 
-SOURCE_HASH = "c0eb69a57259c168"  # sha256 of the generated region of protocol.h
+SOURCE_HASH = "1b4e073c26358f88"  # sha256 of the generated region of protocol.h
 
 
 # --- Constants -----------------------------------------------------------
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 PACKET_SOF0 = 0xA5
 PACKET_SOF1 = 0x5A
 PACKET_HEADER_LEN = 9
@@ -29,6 +29,9 @@ FLAG_IS_RESPONSE = 2
 FLAG_IS_ERROR = 4
 FLAG_NO_ROUTE = 8
 NODE_AIRFLOW = 3
+AXIS_MOVE_RELATIVE = 1
+AXIS_MOVE_APPROACH_NEG = 2
+AXIS_MOVE_APPROACH_POS = 4
 AXIS_FLAG_HOMED = 1
 AXIS_FLAG_MOVING = 2
 AXIS_FLAG_AT_LIMIT = 4
@@ -46,8 +49,8 @@ FAULTBIT_ESTOP = 0x100
 LASER_ARM_KEY = 0x4D4F4152
 POINT_FLAG_LASER_ON = 1
 POINT_FLAG_LAST = 2
-BATCH_FLAG_FIRST = 1
-BATCH_FLAG_LAST = 2
+FIELD_SCALE_MIN_MCPMM = 0x35555
+FIELD_SCALE_MAX_MCPMM = 0x1E4E0D
 
 
 # --- Enums ---------------------------------------------------------------
@@ -82,6 +85,9 @@ class MsgId(IntEnum):
     LAYER_BEGIN = 0x16
     LAYER_END = 0x17
     JOB_COMPLETE = 0x18
+    JOB_UPLOAD_BEGIN = 0x19
+    JOB_UPLOAD_DATA = 0x1A
+    JOB_UPLOAD_END = 0x1B
     SAFETY_STATUS = 0x20
     ESTOP = 0x21
     FAULT = 0x22
@@ -93,11 +99,16 @@ class MsgId(IntEnum):
     RECOAT_CYCLE = 0x34
     SENSOR_REPORT = 0x40
     PURGE_SET = 0x41
+    LIGHT_SET = 0x42
+    SENSOR_OVERRIDE = 0x43
     LASER_ARM = 0x50
     LASER_PARAMS = 0x51
-    MARK_BATCH = 0x52
     MARK_ABORT = 0x53
     GALVO_STATUS = 0x54
+    TIMING_OFFSET = 0x55
+    FIELD_CORRECTION_BEGIN = 0x56
+    FIELD_CORRECTION_DATA = 0x57
+    FIELD_CORRECTION_END = 0x58
     FAN_SET = 0x60
     FAN_STATUS = 0x61
 
@@ -122,6 +133,7 @@ class AxisId(IntEnum):
     FEED = 0x00
     BED = 0x01
     WIPE = 0x02
+    BLADE_LIFT = 0x03
 
 
 class FaultCode(IntEnum):
@@ -142,6 +154,29 @@ class FaultCode(IntEnum):
     VERSION_MISMATCH = 0x0C
     SENSOR_INVALID = 0x0D
     INTERNAL = 0xFF
+
+
+class ParkMode(IntEnum):
+    """C `park_mode_t`."""
+
+    OVERFLOW = 0x00
+    SUPPLY = 0x01
+    STAGED = 0x02
+
+
+class LightMode(IntEnum):
+    """C `light_mode_t`."""
+
+    OFF = 0x00
+    AMBIENT = 0x01
+    SHADOW = 0x02
+
+
+class FanId(IntEnum):
+    """C `fan_id_t`."""
+
+    CHAMBER_BLOWER = 0x00
+    RADIATOR = 0x01
 
 
 class LogLevel(IntEnum):
@@ -634,29 +669,33 @@ class AxisStatus:
         )
 
 
-_S_RECOATCYCLE = struct.Struct("<iiHBB")
+_S_RECOATCYCLE = struct.Struct("<iiHHiBB")
 
 
 @dataclass
 class RecoatCycle:
-    """C `recoat_cycle_t` — 12 bytes on the wire."""
+    """C `recoat_cycle_t` — 18 bytes on the wire."""
 
     feed_um: int = 0
     bed_um: int = 0
     wipe_speed_mm_s: int = 0
+    settle_ms: int = 0
+    clearance_um: int = 0
     passes: int = 0
-    flags: int = 0
+    park_mode: int = 0
 
-    FORMAT: ClassVar[str] = "<iiHBB"
-    SIZE: ClassVar[int] = 12
+    FORMAT: ClassVar[str] = "<iiHHiBB"
+    SIZE: ClassVar[int] = 18
 
     def pack(self) -> bytes:
         return _S_RECOATCYCLE.pack(
             self.feed_um,
             self.bed_um,
             self.wipe_speed_mm_s,
+            self.settle_ms,
+            self.clearance_um,
             self.passes,
-            self.flags,
+            self.park_mode,
         )
 
     @classmethod
@@ -666,8 +705,10 @@ class RecoatCycle:
             feed_um=v[0],
             bed_um=v[1],
             wipe_speed_mm_s=v[2],
-            passes=v[3],
-            flags=v[4],
+            settle_ms=v[3],
+            clearance_um=v[4],
+            passes=v[5],
+            park_mode=v[6],
         )
 
 
@@ -813,40 +854,117 @@ class LaserParams:
         )
 
 
-_S_MARKBATCHHEADER = struct.Struct("<HHHBB")
+_S_JOBFILEHEADER = struct.Struct("<8sHHIiIHH")
 
 
 @dataclass
-class MarkBatchHeader:
-    """C `mark_batch_header_t` — 8 bytes on the wire."""
+class JobFileHeader:
+    """C `job_file_header_t` — 28 bytes on the wire."""
 
-    layer_index: int = 0
-    batch_index: int = 0
-    count: int = 0
-    flags: int = 0
+    magic: bytes = b""
+    format_version: int = 0
+    layer_count: int = 0
+    job_id: int = 0
+    layer_thickness_um: int = 0
+    total_bytes: int = 0
+    file_crc: int = 0
     reserved: int = 0
 
-    FORMAT: ClassVar[str] = "<HHHBB"
-    SIZE: ClassVar[int] = 8
+    FORMAT: ClassVar[str] = "<8sHHIiIHH"
+    SIZE: ClassVar[int] = 28
 
     def pack(self) -> bytes:
-        return _S_MARKBATCHHEADER.pack(
-            self.layer_index,
-            self.batch_index,
-            self.count,
-            self.flags,
+        return _S_JOBFILEHEADER.pack(
+            self.magic.ljust(8, b'\x00')[:8],
+            self.format_version,
+            self.layer_count,
+            self.job_id,
+            self.layer_thickness_um,
+            self.total_bytes,
+            self.file_crc,
             self.reserved,
         )
 
     @classmethod
-    def unpack(cls, data: bytes) -> "MarkBatchHeader":
-        v = _S_MARKBATCHHEADER.unpack(data[: cls.SIZE])
+    def unpack(cls, data: bytes) -> "JobFileHeader":
+        v = _S_JOBFILEHEADER.unpack(data[: cls.SIZE])
+        return cls(
+            magic=v[0],
+            format_version=v[1],
+            layer_count=v[2],
+            job_id=v[3],
+            layer_thickness_um=v[4],
+            total_bytes=v[5],
+            file_crc=v[6],
+            reserved=v[7],
+        )
+
+
+_S_LAYERHEADER = struct.Struct("<HHIiHH")
+
+
+@dataclass
+class LayerHeader:
+    """C `layer_header_t` — 16 bytes on the wire."""
+
+    layer_index: int = 0
+    group_count: int = 0
+    byte_count: int = 0
+    z_um: int = 0
+    crc: int = 0
+    reserved: int = 0
+
+    FORMAT: ClassVar[str] = "<HHIiHH"
+    SIZE: ClassVar[int] = 16
+
+    def pack(self) -> bytes:
+        return _S_LAYERHEADER.pack(
+            self.layer_index,
+            self.group_count,
+            self.byte_count,
+            self.z_um,
+            self.crc,
+            self.reserved,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "LayerHeader":
+        v = _S_LAYERHEADER.unpack(data[: cls.SIZE])
         return cls(
             layer_index=v[0],
-            batch_index=v[1],
-            count=v[2],
-            flags=v[3],
-            reserved=v[4],
+            group_count=v[1],
+            byte_count=v[2],
+            z_um=v[3],
+            crc=v[4],
+            reserved=v[5],
+        )
+
+
+_S_VECTORGROUP = struct.Struct("<HH")
+
+
+@dataclass
+class VectorGroup:
+    """C `vector_group_t` — 4 bytes on the wire."""
+
+    point_count: int = 0
+    reserved: int = 0
+
+    FORMAT: ClassVar[str] = "<HH"
+    SIZE: ClassVar[int] = 4
+
+    def pack(self) -> bytes:
+        return _S_VECTORGROUP.pack(
+            self.point_count,
+            self.reserved,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "VectorGroup":
+        v = _S_VECTORGROUP.unpack(data[: cls.SIZE])
+        return cls(
+            point_count=v[0],
+            reserved=v[1],
         )
 
 
@@ -921,6 +1039,192 @@ class GalvoStatus:
         )
 
 
+_S_JOBUPLOADBEGIN = struct.Struct("<IIHH")
+
+
+@dataclass
+class JobUploadBegin:
+    """C `job_upload_begin_t` — 12 bytes on the wire."""
+
+    job_id: int = 0
+    total_bytes: int = 0
+    layer_count: int = 0
+    file_crc: int = 0
+
+    FORMAT: ClassVar[str] = "<IIHH"
+    SIZE: ClassVar[int] = 12
+
+    def pack(self) -> bytes:
+        return _S_JOBUPLOADBEGIN.pack(
+            self.job_id,
+            self.total_bytes,
+            self.layer_count,
+            self.file_crc,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "JobUploadBegin":
+        v = _S_JOBUPLOADBEGIN.unpack(data[: cls.SIZE])
+        return cls(
+            job_id=v[0],
+            total_bytes=v[1],
+            layer_count=v[2],
+            file_crc=v[3],
+        )
+
+
+_S_JOBUPLOADDATA = struct.Struct("<IHH")
+
+
+@dataclass
+class JobUploadData:
+    """C `job_upload_data_t` — 8 bytes on the wire."""
+
+    chunk_index: int = 0
+    byte_count: int = 0
+    reserved: int = 0
+
+    FORMAT: ClassVar[str] = "<IHH"
+    SIZE: ClassVar[int] = 8
+
+    def pack(self) -> bytes:
+        return _S_JOBUPLOADDATA.pack(
+            self.chunk_index,
+            self.byte_count,
+            self.reserved,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "JobUploadData":
+        v = _S_JOBUPLOADDATA.unpack(data[: cls.SIZE])
+        return cls(
+            chunk_index=v[0],
+            byte_count=v[1],
+            reserved=v[2],
+        )
+
+
+_S_JOBUPLOADEND = struct.Struct("<I")
+
+
+@dataclass
+class JobUploadEnd:
+    """C `job_upload_end_t` — 4 bytes on the wire."""
+
+    job_id: int = 0
+
+    FORMAT: ClassVar[str] = "<I"
+    SIZE: ClassVar[int] = 4
+
+    def pack(self) -> bytes:
+        return _S_JOBUPLOADEND.pack(
+            self.job_id,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "JobUploadEnd":
+        v = _S_JOBUPLOADEND.unpack(data[: cls.SIZE])
+        return cls(
+            job_id=v[0],
+        )
+
+
+_S_FIELDCORRBEGIN = struct.Struct("<BBHIHH")
+
+
+@dataclass
+class FieldCorrBegin:
+    """C `field_corr_begin_t` — 12 bytes on the wire."""
+
+    grid_size: int = 0
+    reserved: int = 0
+    point_total: int = 0
+    scale_mcpmm: int = 0
+    table_crc: int = 0
+    reserved2: int = 0
+
+    FORMAT: ClassVar[str] = "<BBHIHH"
+    SIZE: ClassVar[int] = 12
+
+    def pack(self) -> bytes:
+        return _S_FIELDCORRBEGIN.pack(
+            self.grid_size,
+            self.reserved,
+            self.point_total,
+            self.scale_mcpmm,
+            self.table_crc,
+            self.reserved2,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "FieldCorrBegin":
+        v = _S_FIELDCORRBEGIN.unpack(data[: cls.SIZE])
+        return cls(
+            grid_size=v[0],
+            reserved=v[1],
+            point_total=v[2],
+            scale_mcpmm=v[3],
+            table_crc=v[4],
+            reserved2=v[5],
+        )
+
+
+_S_FIELDCORRDATA = struct.Struct("<HH")
+
+
+@dataclass
+class FieldCorrData:
+    """C `field_corr_data_t` — 4 bytes on the wire."""
+
+    chunk_index: int = 0
+    point_count: int = 0
+
+    FORMAT: ClassVar[str] = "<HH"
+    SIZE: ClassVar[int] = 4
+
+    def pack(self) -> bytes:
+        return _S_FIELDCORRDATA.pack(
+            self.chunk_index,
+            self.point_count,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "FieldCorrData":
+        v = _S_FIELDCORRDATA.unpack(data[: cls.SIZE])
+        return cls(
+            chunk_index=v[0],
+            point_count=v[1],
+        )
+
+
+_S_FIELDCORRPOINT = struct.Struct("<hh")
+
+
+@dataclass
+class FieldCorrPoint:
+    """C `field_corr_point_t` — 4 bytes on the wire."""
+
+    dx: int = 0
+    dy: int = 0
+
+    FORMAT: ClassVar[str] = "<hh"
+    SIZE: ClassVar[int] = 4
+
+    def pack(self) -> bytes:
+        return _S_FIELDCORRPOINT.pack(
+            self.dx,
+            self.dy,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "FieldCorrPoint":
+        v = _S_FIELDCORRPOINT.unpack(data[: cls.SIZE])
+        return cls(
+            dx=v[0],
+            dy=v[1],
+        )
+
+
 _S_FANSET = struct.Struct("<BBHH")
 
 
@@ -928,8 +1232,8 @@ _S_FANSET = struct.Struct("<BBHH")
 class FanSet:
     """C `fan_set_t` — 6 bytes on the wire."""
 
+    fan: int = 0
     mode: int = 0
-    reserved: int = 0
     duty_pm: int = 0
     target_flow_cm_s: int = 0
 
@@ -938,8 +1242,8 @@ class FanSet:
 
     def pack(self) -> bytes:
         return _S_FANSET.pack(
+            self.fan,
             self.mode,
-            self.reserved,
             self.duty_pm,
             self.target_flow_cm_s,
         )
@@ -948,8 +1252,8 @@ class FanSet:
     def unpack(cls, data: bytes) -> "FanSet":
         v = _S_FANSET.unpack(data[: cls.SIZE])
         return cls(
-            mode=v[0],
-            reserved=v[1],
+            fan=v[0],
+            mode=v[1],
             duty_pm=v[2],
             target_flow_cm_s=v[3],
         )
@@ -962,8 +1266,8 @@ _S_FANSTATUS = struct.Struct("<BBHHH")
 class FanStatus:
     """C `fan_status_t` — 8 bytes on the wire."""
 
+    fan: int = 0
     mode: int = 0
-    flags: int = 0
     duty_pm: int = 0
     rpm: int = 0
     flow_cm_s: int = 0
@@ -973,8 +1277,8 @@ class FanStatus:
 
     def pack(self) -> bytes:
         return _S_FANSTATUS.pack(
+            self.fan,
             self.mode,
-            self.flags,
             self.duty_pm,
             self.rpm,
             self.flow_cm_s,
@@ -984,11 +1288,101 @@ class FanStatus:
     def unpack(cls, data: bytes) -> "FanStatus":
         v = _S_FANSTATUS.unpack(data[: cls.SIZE])
         return cls(
-            mode=v[0],
-            flags=v[1],
+            fan=v[0],
+            mode=v[1],
             duty_pm=v[2],
             rpm=v[3],
             flow_cm_s=v[4],
+        )
+
+
+_S_LIGHTSET = struct.Struct("<BBH")
+
+
+@dataclass
+class LightSet:
+    """C `light_set_t` — 4 bytes on the wire."""
+
+    mode: int = 0
+    reserved: int = 0
+    settle_ms: int = 0
+
+    FORMAT: ClassVar[str] = "<BBH"
+    SIZE: ClassVar[int] = 4
+
+    def pack(self) -> bytes:
+        return _S_LIGHTSET.pack(
+            self.mode,
+            self.reserved,
+            self.settle_ms,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "LightSet":
+        v = _S_LIGHTSET.unpack(data[: cls.SIZE])
+        return cls(
+            mode=v[0],
+            reserved=v[1],
+            settle_ms=v[2],
+        )
+
+
+_S_SENSOROVERRIDE = struct.Struct("<H2H6h")
+
+
+@dataclass
+class SensorOverride:
+    """C `sensor_override_t` — 18 bytes on the wire."""
+
+    override_mask: int = 0
+    oxygen_true_ppm: Tuple[int, ...] = field(default_factory=tuple)
+    temp_true_c_x10: Tuple[int, ...] = field(default_factory=tuple)
+
+    FORMAT: ClassVar[str] = "<H2H6h"
+    SIZE: ClassVar[int] = 18
+
+    def pack(self) -> bytes:
+        return _S_SENSOROVERRIDE.pack(
+            self.override_mask,
+            *tuple(self.oxygen_true_ppm)[:2],
+            *tuple(self.temp_true_c_x10)[:6],
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "SensorOverride":
+        v = _S_SENSOROVERRIDE.unpack(data[: cls.SIZE])
+        return cls(
+            override_mask=v[0],
+            oxygen_true_ppm=tuple(v[1:3]),
+            temp_true_c_x10=tuple(v[3:9]),
+        )
+
+
+_S_TIMINGOFFSET = struct.Struct("<hh")
+
+
+@dataclass
+class TimingOffset:
+    """C `timing_offset_t` — 4 bytes on the wire."""
+
+    laser_lead_samples: int = 0
+    reserved: int = 0
+
+    FORMAT: ClassVar[str] = "<hh"
+    SIZE: ClassVar[int] = 4
+
+    def pack(self) -> bytes:
+        return _S_TIMINGOFFSET.pack(
+            self.laser_lead_samples,
+            self.reserved,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "TimingOffset":
+        v = _S_TIMINGOFFSET.unpack(data[: cls.SIZE])
+        return cls(
+            laser_lead_samples=v[0],
+            reserved=v[1],
         )
 
 

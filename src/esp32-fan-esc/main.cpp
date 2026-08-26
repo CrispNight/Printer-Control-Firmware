@@ -37,8 +37,9 @@ uint16_t fault_flags   = 0;
 uint32_t last_heartbeat_ms = 0;
 
 /* Current commanded airflow. Reported in fan_status_t; not yet applied to an
- * output. */
-fan_set_t commanded = { FAN_MODE_OFF, 0, 0, 0 };
+ * output. This node owns the chamber blower; the radiator fan is defined in
+ * the protocol but not wired on the current machine. */
+fan_set_t commanded = { FAN_CHAMBER_BLOWER, FAN_MODE_OFF, 0, 0 };
 
 void sendHello(uint8_t dst)
 {
@@ -57,6 +58,7 @@ void sendFanStatus(uint8_t dst)
 {
     fan_status_t status;
     memset(&status, 0, sizeof(status));
+    status.fan     = commanded.fan;
     status.mode    = commanded.mode;
     status.duty_pm = commanded.duty_pm;
     /* rpm and flow_cm_s stay 0: no tach, no flow sensor. */

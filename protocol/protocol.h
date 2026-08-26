@@ -37,7 +37,7 @@ extern "C" {
 
 /* Bump on ANY change to packet layout, message ids, or payload structs.
  * Nodes refuse to talk to a peer reporting a different major version. */
-#define PROTOCOL_VERSION 1
+#define PROTOCOL_VERSION 2
 
 /* --- Packet framing ------------------------------------------------------ */
 
@@ -92,6 +92,13 @@ typedef enum {
     MSG_LAYER_END       = 0x17,  /* layer_end_t */
     MSG_JOB_COMPLETE    = 0x18,  /* no payload */
 
+    /* Job upload: PC writes a job file onto the Teensy's microSD card.
+     * Payload of _DATA is opaque file bytes; the file layout is defined by
+     * job_file_header_t and friends below, not parsed by the transport. */
+    MSG_JOB_UPLOAD_BEGIN = 0x19, /* job_upload_begin_t */
+    MSG_JOB_UPLOAD_DATA  = 0x1A, /* job_upload_data_t + bytes */
+    MSG_JOB_UPLOAD_END   = 0x1B, /* job_upload_end_t */
+
     /* 0x20-0x2F  safety */
     MSG_SAFETY_STATUS   = 0x20,  /* safety_status_t */
     MSG_ESTOP           = 0x21,  /* no payload — highest priority, always acted on */
@@ -108,13 +115,26 @@ typedef enum {
     /* 0x40-0x4F  process sensing (Mega) */
     MSG_SENSOR_REPORT   = 0x40,  /* sensor_report_t */
     MSG_PURGE_SET       = 0x41,  /* purge_set_t — argon solenoid / O2 target */
+    MSG_LIGHT_SET       = 0x42,  /* light_set_t — chamber lighting for the camera */
+    MSG_SENSOR_OVERRIDE = 0x43,  /* sensor_override_t — sent on connect and on
+                                  * change only, never on the periodic report */
 
     /* 0x50-0x5F  laser and galvo (Teensy) */
     MSG_LASER_ARM       = 0x50,  /* laser_arm_t */
     MSG_LASER_PARAMS    = 0x51,  /* laser_params_t */
-    MSG_MARK_BATCH      = 0x52,  /* mark_batch_header_t + vector_point_t[count] */
+    /* 0x52 retired — was MSG_MARK_BATCH, which both carried vectors and
+     * started emission. Vectors now reach the machine as a job file on the SD
+     * card (MSG_JOB_UPLOAD_*), so no single message does both. Not reused. */
     MSG_MARK_ABORT      = 0x53,  /* no payload */
     MSG_GALVO_STATUS    = 0x54,  /* galvo_status_t */
+    MSG_TIMING_OFFSET   = 0x55,  /* timing_offset_t — laser lead/lag vs position */
+
+    /* Field correction table upload. Atomic: nothing is applied until _END
+     * verifies the whole-table CRC, so a dropped chunk can never leave a
+     * half-written table in place. */
+    MSG_FIELD_CORRECTION_BEGIN = 0x56, /* field_corr_begin_t */
+    MSG_FIELD_CORRECTION_DATA  = 0x57, /* field_corr_data_t + entries */
+    MSG_FIELD_CORRECTION_END   = 0x58, /* no payload — commit and verify */
 
     /* 0x60-0x6F  airflow (Mega today, ESP32 later) */
     MSG_FAN_SET         = 0x60,  /* fan_set_t */
@@ -138,10 +158,20 @@ typedef enum {
 /* --- Axes ---------------------------------------------------------------- */
 
 typedef enum {
-    AXIS_FEED = 0x00,  /* powder feed / dispense piston */
-    AXIS_BED  = 0x01,  /* build platform Z */
-    AXIS_WIPE = 0x02,  /* recoater blade */
+    AXIS_FEED       = 0x00,  /* powder feed / dispense piston (closed loop) */
+    AXIS_BED        = 0x01,  /* build platform Z (closed loop) */
+    AXIS_WIPE       = 0x02,  /* recoater blade (open loop — drifts, re-home) */
+    AXIS_BLADE_LIFT = 0x03,  /* RESERVED — not fitted. Would tilt the blade
+                              * clear so the return traverse needs no bed move. */
 } axis_id_t;
+
+/* axis_move_t.flags bits.
+ * APPROACH_NEG forces the axis to reach its target from below, overshooting
+ * and returning. The mechanics have real backlash, so the bed always descends
+ * into position during a recoat. */
+#define AXIS_MOVE_RELATIVE     0x01
+#define AXIS_MOVE_APPROACH_NEG 0x02
+#define AXIS_MOVE_APPROACH_POS 0x04
 
 /* axis_status_t.flags bits */
 #define AXIS_FLAG_HOMED    0x01
@@ -182,6 +212,38 @@ typedef enum {
 #define FAULTBIT_COMMS     0x0080
 #define FAULTBIT_ESTOP     0x0100
 
+/* --- Recoat park position ------------------------------------------------ */
+
+/* Where the recoater ends the cycle. Overflow is the default: the build-plate
+ * drop that makes room for the next layer also clears the return traverse, so
+ * powder is spread only on the forward pass. Supply parking costs an extra
+ * drop-and-raise to clear the blade over freshly spread powder. */
+typedef enum {
+    PARK_OVERFLOW = 0x00,  /* default */
+    PARK_SUPPLY   = 0x01,  /* needs clearance_um on the return */
+    PARK_STAGED   = 0x02,  /* RESERVED — pre-staged pile near the build area */
+} park_mode_t;
+
+/* --- Chamber lighting ---------------------------------------------------- */
+
+/* Two relays. SHADOW is side-lighting, which is how surface topology and
+ * therefore recoat defects become visible to the camera. */
+typedef enum {
+    LIGHT_OFF     = 0x00,
+    LIGHT_AMBIENT = 0x01,
+    LIGHT_SHADOW  = 0x02,
+} light_mode_t;
+
+/* --- Fans ---------------------------------------------------------------- */
+
+/* Two independent fans on separate outputs. */
+typedef enum {
+    FAN_CHAMBER_BLOWER = 0x00,  /* argon circulation over the build area */
+    FAN_RADIATOR       = 0x01,  /* build plate water cooling — NOT WIRED on the
+                                 * current machine; the plate adapter is
+                                 * plastic. Defined so it costs nothing later. */
+} fan_id_t;
+
 /* --- Log levels ---------------------------------------------------------- */
 
 typedef enum {
@@ -221,9 +283,13 @@ typedef enum {
 #define POINT_FLAG_LASER_ON  0x01  /* laser on while travelling TO this point */
 #define POINT_FLAG_LAST      0x02  /* final point of the layer */
 
-/* mark_batch_header_t.flags bits */
-#define BATCH_FLAG_FIRST     0x01
-#define BATCH_FLAG_LAST      0x02
+/* Field scale sanity band, milli-counts per millimetre. A correction file
+ * outside this implies a field smaller than 33 mm or larger than 300 mm, which
+ * is not this machine. A scale of exactly 1000 (1.0 counts/mm) is the known
+ * placeholder written by the old tooling — reject it loudly and propose the
+ * scale implied by the table rather than silently accepting or fixing it. */
+#define FIELD_SCALE_MIN_MCPMM  218453UL  /* 65536/300 -> 300 mm field */
+#define FIELD_SCALE_MAX_MCPMM 1986061UL  /* 65536/33  ->  33 mm field */
 
 /* fan_set_t.mode */
 typedef enum {
@@ -355,12 +421,20 @@ typedef struct {
 } axis_status_t;
 
 /* MSG_RECOAT_CYCLE — one complete powder recoat: drop bed, raise feed, sweep. */
+/* The Mega executes the whole sequence on one message; it owns the axes and
+ * the limit switches, and the cycle must complete even if the link hiccups.
+ * Order matters and is documented in PROTOCOL.md. */
 typedef struct {
     int32_t  feed_um;        /* powder piston rise */
     int32_t  bed_um;         /* build platform drop (negative = down) */
     uint16_t wipe_speed_mm_s;
+    uint16_t settle_ms;      /* pause after the pistons move, before the sweep.
+                              * 2000 in the old firmware; the reason is no
+                              * longer remembered, so measure before reducing. */
+    int32_t  clearance_um;   /* PARK_SUPPLY only: extra bed drop so the return
+                              * traverse clears freshly spread powder */
     uint8_t  passes;
-    uint8_t  flags;          /* reserved */
+    uint8_t  park_mode;      /* park_mode_t */
 } recoat_cycle_t;
 
 /* MSG_SENSOR_REPORT — the Mega's periodic process snapshot.
@@ -398,16 +472,52 @@ typedef struct {
     uint16_t poly_delay_us;    /* corner dwell between segments */
 } laser_params_t;
 
-/* MSG_MARK_BATCH header. Followed in the same payload by `count`
- * vector_point_t records. count is bounded by PACKET_MAX_PAYLOAD:
- *   count <= (PACKET_MAX_PAYLOAD - sizeof(mark_batch_header_t)) / sizeof(vector_point_t) */
+/* ===== Job file layout ====================================================
+ * These are NOT packet payloads. They are the on-card format the PC generates
+ * and the Teensy streams layers from, defined here so both sides agree.
+ * MSG_JOB_UPLOAD_DATA carries these bytes opaquely.
+ *
+ *   job_file_header_t
+ *   per layer:
+ *     layer_header_t
+ *     per parameter group:
+ *       vector_group_t
+ *       laser_params_t
+ *       vector_point_t[point_count]
+ * ======================================================================== */
+
+typedef struct {
+    char     magic[8];           /* "MOIRENJB" */
+    uint16_t format_version;
+    uint16_t layer_count;
+    uint32_t job_id;
+    int32_t  layer_thickness_um;
+    uint32_t total_bytes;        /* everything after this header */
+    uint16_t file_crc;           /* CRC-16 over everything after this header */
+    uint16_t reserved;
+} job_file_header_t;
+
+/* Per layer. `crc` is checked at READ time, not just at upload: a card can
+ * develop bad sectors long after a correct write, so this is the check that
+ * actually protects a print. A layer that fails it faults before anything is
+ * melted. */
 typedef struct {
     uint16_t layer_index;
-    uint16_t batch_index;  /* 0-based, monotonic within a layer */
-    uint16_t count;        /* vector_point_t records that follow */
-    uint8_t  flags;        /* BATCH_FLAG_* */
-    uint8_t  reserved;
-} mark_batch_header_t;
+    uint16_t group_count;
+    uint32_t byte_count;   /* bytes of this layer following this header */
+    int32_t  z_um;         /* absolute build platform position for this layer */
+    uint16_t crc;          /* CRC-16 over this layer's groups and points */
+    uint16_t reserved;
+} layer_header_t;
+
+/* One run of points sharing a laser_params_t, which follows immediately after
+ * this record. Grouping this way costs one parameter record per contour rather
+ * than a power field on every point — most vectors in a layer share settings,
+ * and a curved contour holds constant power throughout. */
+typedef struct {
+    uint16_t point_count;
+    uint16_t reserved;
+} vector_group_t;
 
 /* One galvo target, in bed coordinates. The Teensy applies the field
  * correction table; the PC never sends raw DAC counts. */
@@ -427,22 +537,112 @@ typedef struct {
     uint16_t fault_flags;      /* FAULTBIT_* */
 } galvo_status_t;
 
+/* MSG_JOB_UPLOAD_BEGIN — announce a job file about to be written to the card. */
+typedef struct {
+    uint32_t job_id;
+    uint32_t total_bytes;
+    uint16_t layer_count;
+    uint16_t file_crc;      /* must match job_file_header_t.file_crc */
+} job_upload_begin_t;
+
+/* MSG_JOB_UPLOAD_DATA — followed by byte_count opaque file bytes.
+ * chunk_index is 0-based and must arrive in order; a gap is detected
+ * immediately rather than silently shifting the rest of the file. */
+typedef struct {
+    uint32_t chunk_index;
+    uint16_t byte_count;
+    uint16_t reserved;
+} job_upload_data_t;
+
+/* MSG_JOB_UPLOAD_END — commit. The node verifies the byte count and the file
+ * CRC and only then marks the job valid on the card; a failed transfer never
+ * becomes a printable job. The ACK carries the result. */
+typedef struct {
+    uint32_t job_id;
+} job_upload_end_t;
+
+/* MSG_FIELD_CORRECTION_BEGIN */
+typedef struct {
+    uint8_t  grid_size;     /* 65 */
+    uint8_t  reserved;
+    uint16_t point_total;   /* grid_size * grid_size, i.e. 4225 */
+    uint32_t scale_mcpmm;   /* field scale, milli-counts per millimetre.
+                             * 374500 = 374.5 counts/mm = a 175 mm lens.
+                             * Checked against FIELD_SCALE_MIN/MAX_MCPMM. */
+    uint16_t table_crc;     /* CRC-16 over all entries, in order */
+    uint16_t reserved2;
+} field_corr_begin_t;
+
+/* MSG_FIELD_CORRECTION_DATA — followed by point_count field_corr_point_t. */
+typedef struct {
+    uint16_t chunk_index;   /* 0-based, must arrive in order */
+    uint16_t point_count;
+} field_corr_data_t;
+
+/* One grid node. Ordinary signed offsets: the .cor file on disk stores
+ * sign-magnitude with bit 15 as a sign flag, and that is decoded once when the
+ * file is read — never inside the interpolation path. */
+typedef struct {
+    int16_t dx;
+    int16_t dy;
+} field_corr_point_t;
+
 /* MSG_FAN_SET */
 typedef struct {
+    uint8_t  fan;               /* fan_id_t */
     uint8_t  mode;              /* fan_mode_t */
-    uint8_t  reserved;
     uint16_t duty_pm;           /* FAN_MODE_MANUAL: 0..1000 */
     uint16_t target_flow_cm_s;  /* FAN_MODE_CLOSEDLOOP only */
 } fan_set_t;
 
 /* MSG_FAN_STATUS */
 typedef struct {
+    uint8_t  fan;         /* fan_id_t */
     uint8_t  mode;        /* fan_mode_t */
-    uint8_t  flags;       /* reserved */
     uint16_t duty_pm;
     uint16_t rpm;         /* 0 when no tach is fitted */
     uint16_t flow_cm_s;   /* 0 when no flow sensor is fitted */
 } fan_status_t;
+
+/* MSG_LIGHT_SET — chamber lighting.
+ * settle_ms is how long a caller should wait before capturing: the webcam has
+ * a physical lens, and autofocus, white balance and exposure all need time to
+ * adapt. 0 means use the node's configured default. */
+typedef struct {
+    uint8_t  mode;       /* light_mode_t */
+    uint8_t  reserved;
+    uint16_t settle_ms;
+} light_set_t;
+
+/* MSG_SENSOR_OVERRIDE — which channels are being substituted, and what the
+ * hardware actually reads underneath.
+ *
+ * Overrides are compile-time on the sensing node so they cannot be set by
+ * accident, but they MUST be visible: this message lets the UI show the
+ * substituted value next to the real one, in red. Sent on connect and on
+ * change only — never on the periodic report, which would spend bandwidth ten
+ * times a second on something that almost never changes.
+ *
+ * Bit layout matches sensor_report_t.valid_mask: bit0..1 oxygen[0..1],
+ * bit8..13 temp[0..5]. */
+typedef struct {
+    uint16_t override_mask;      /* set bits are substituted, not measured */
+    uint16_t oxygen_true_ppm[2]; /* what the sensor actually reads */
+    int16_t  temp_true_c_x10[6];
+} sensor_override_t;
+
+/* MSG_TIMING_OFFSET — systematic lead/lag between the laser power stream and
+ * the galvo position stream, in galvo samples. Signed: positive emits power
+ * ahead of position.
+ *
+ * Only the DIFFERENCE between the two path delays matters; equal delay on both
+ * shifts everything uniformly and is invisible in the part. Distinct from the
+ * commanded dwells in laser_params_t: this is a per-machine hardware
+ * correction, measured once on the bench. */
+typedef struct {
+    int16_t laser_lead_samples;
+    int16_t reserved;
+} timing_offset_t;
 
 #pragma pack(pop)
 
@@ -467,9 +667,11 @@ static inline uint16_t crc16_ccitt(const uint8_t *data, uint16_t len)
     return crc;
 }
 
-/* Maximum vector_point_t records that fit in one MSG_MARK_BATCH packet. */
-#define MARK_BATCH_MAX_POINTS \
-    ((PACKET_MAX_PAYLOAD - (int)sizeof(mark_batch_header_t)) / (int)sizeof(vector_point_t))
+/* How much of each bulk-transfer payload is usable. */
+#define FIELD_CORR_MAX_POINTS \
+    ((PACKET_MAX_PAYLOAD - (int)sizeof(field_corr_data_t)) / (int)sizeof(field_corr_point_t))
+#define JOB_UPLOAD_MAX_BYTES \
+    (PACKET_MAX_PAYLOAD - (int)sizeof(job_upload_data_t))
 
 #ifdef __cplusplus
 } /* extern "C" */
