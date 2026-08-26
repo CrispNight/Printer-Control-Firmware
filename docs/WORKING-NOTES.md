@@ -259,3 +259,117 @@ Recorded in the port commit, repeated here so they aren't lost:
   has a `DAC_USE_SPI` compile-time flag for this, and it must match JP1's
   physical position. A boot banner reporting which DAC the build expects would
   turn a silent dead output into an obvious message.
+
+## 10. Verified Teensy 4.1 pin facts
+
+Extracted from the Teensy core, scoped to the `ARDUINO_TEENSY41` block of
+`cores/teensy4/core_pins.h` (the file holds separate tables for 4.0, 4.1 and
+MicroMod — reading across them gives wrong answers).
+
+### FlexIO2 — only 7 pins on this chip
+
+| FlexIO2 pin | Silk | Use |
+|---|---|---|
+| 00 | 10 | XY2-100 CLK, head 1 |
+| 01 | 12 | XY2-100 SYNC, head 1 |
+| 02 | 11 | XY2-100 X, head 1 |
+| 03 | 13 | XY2-100 Y, head 1 |
+| 10 | **6** | free — reserve for head 2 X |
+| 11 | **9** | free — reserve for head 2 Y |
+| 12 | 32 | DAC CS — frees up if CS moves to pin 38 |
+
+Pins 40 and 41 are **not** FlexIO2; they are `AD_B1_04/05`, which is FlexIO3.
+
+**FlexIO3 has no DMA.** Only `DMAMUX_SOURCE_FLEXIO1_*` and `FLEXIO2_*` exist in
+`imxrt.h` — there is no FlexIO3 request line. So despite FlexIO3 having 16 pins,
+it cannot stream. FlexIO1 does have DMA if a third instance is ever needed.
+
+### Hardware serial ports
+
+| Port | RX/TX | Status on this board |
+|---|---|---|
+| Serial1 | 0 / 1 | free |
+| Serial2 | 7 / 8 | free |
+| Serial3 | 15 / 14 | taken |
+| Serial4 | 16 / 17 | taken |
+| Serial5 | 21 / 20 | taken |
+| Serial6 | 25 / 24 | free |
+| Serial7 | 28 / 29 | taken |
+| Serial8 | 34 / 35 | taken |
+
+Three free UARTs. Putting the DAC CS on pin 38 rather than pin 0 keeps all three.
+
+### SPI ports — only one usable chip select
+
+| Port | Pins | Status |
+|---|---|---|
+| `SPI` / LPSPI4 | MOSI 11, MISO 12, SCK 13, CS 10/37/36 | consumed by the galvo |
+| `SPI2` / LPSPI1 | CS 44 | inside the 42–47 microSD range |
+| `SPI1` / LPSPI3 | MOSI 26, SCK 27, PCS0 → 0 *or* 38 | the only one available |
+
+**Pins 0 and 38 are the same chip select**, not two. Both map to
+`IOMUXC_LPSPI3_PCS0_SELECT_INPUT`, the only PCS the core exposes for LPSPI3.
+One at a time.
+
+Pins 42–47 are the microSD socket.
+
+## 11. Two-head expansion — what v0.2 should leave open
+
+Two heads is the natural maximum on this MCU. Beyond that it is a different
+board and probably a different microcontroller.
+
+**Galvo:** a second head needs only **2** pins, not 4. Both heads should share
+one clock and sync anyway to stay synchronised, so head 2 needs just its own X
+and Y. FlexIO2 has 8 shifters and 2 are in use — add shifters 4 and 6 driven by
+the same timers. The existing DMA trick extends: widen the `DMOD` wrap from
+`SHIFTBUFBIS[0],[2]` to `[0],[2],[4],[6]` and one channel interleaves
+X1,Y1,X2,Y2 from a single buffer.
+
+**Laser power:** two sources need two analog outputs, but there is only one
+usable hardware chip select (§10). Rather than two MCP4921s, use one
+**MCP4922** — the dual-channel sibling, same command format, one CS. Bit 15 of
+the word is already the A/B channel select, hardcoded to 0 today because the
+4921 has one output. Alternate words in the buffer:
+
+```
+[ 0x7A00 ]  head 1
+[ 0xFA80 ]  head 2   (bit 15 set)
+```
+
+One DMA channel, one buffer, one CS.
+
+Per-head delay compensation (§5) stays independent and free: the offset is
+applied when the ISR fills the buffer, so each channel's values shift by their
+own amount.
+
+Two caveats:
+- **Raise the SPI clock.** Two writes per galvo frame at 5 MHz is 6.4 µs against
+  a 10 µs frame — 64% duty. The MCP4922 accepts 20 MHz; 10 MHz gives ~32%.
+- **Packages differ.** MCP4921 is 8-pin, MCP4922 is 14-pin — not a drop-in.
+  Either pick one for v0.2 or lay both footprints, as was already done for the
+  GP8211S/MCP4921 pair with JP1.
+
+### v0.2 pin checklist
+
+1. DAC CS → **pin 38**; move `kPinLmInterlockN` to a plain GPIO (22, 23 or 30).
+2. **Reserve FlexIO2 pins 6 and 9** for head 2 X/Y — the entire expansion budget.
+3. Do not spend pins 6, 9 or 32 on ordinary GPIO. They are the last three
+   FlexIO2 pins, and only FlexIO2 can generate XY2-100.
+4. Keep pin 0 free — alternate PCS0 routing, and Serial1 RX.
+5. Consider an MCP4922 (or dual) footprint so two heads need no second SPI port.
+
+## 12. PSRAM — for job data, not DMA buffers
+
+Teensy 4.1 has two underside QSPI footprints, so 8 MB or 16 MB of PSRAM.
+
+**Not for the DMA buffers.** QSPI is far slower than internal RAM and carries
+the same D-cache coherency traps the DMA path already had to solve once with
+OCRAM.
+
+**Good for layer and job data.** Sequential reads, no hard real-time deadline;
+the refill ISR copies from PSRAM into the small internal DMA buffer. At ~180 KB
+per layer, 16 MB holds roughly 90 layers uncompressed.
+
+That makes an entire print job resident in RAM with no PC and no SD card in the
+marking path — the SD slot becomes a *loading* mechanism rather than a
+real-time one, which is a much easier thing to get right.
