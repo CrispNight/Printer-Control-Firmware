@@ -620,6 +620,14 @@ would be a quietly mis-scaled part.
 
 Carry the scale in `MSG_FIELD_CORRECTION_BEGIN` alongside the grid size and CRC.
 
+> **Caveat: the existing files do not use this.** `identity.cor`,
+> `4_30_test1.cor` and `4_30_test3.cor` all carry `header[43] = 1.0`, the
+> default placeholder from `save_correction_file()`, which would compute a
+> nonsense 65,536 mm field. The scale is baked into the *table* as a ramp
+> instead (see below). When regenerating files, separate the concerns: **scale
+> in the header, distortion in the table.** Otherwise the ramp and the firmware
+> constant are two expressions of the same quantity and will drift apart.
+
 Exact offset, for the parser: after the 22-byte label, skip **2** bytes, then 63
 doubles - scale is index 43. That lands at `0x210`, matching the 506-byte header
 figure above (2 + 63*8 = 506).
@@ -670,7 +678,79 @@ and on a 175 mm field a long vector's midpoint would visibly miss. Correction
 belongs in the sample loop, after fractional position accumulation and before
 XY2-100 encoding, with the result clamped to the +/-30,000 limit.
 
-**Bilinear is enough.** f-theta distortion is smooth and low-order, and bilinear
-on a 2.73 mm grid is exactly what the BJJCZ and EZCAD cards do - proven in
-practice. Bicubic would cost ~4x and need 16 corners; not worth it unless
-measurement shows bilinear is the limiting error term.
+**Decision: bilinear, for now.** f-theta distortion is smooth and low-order, and
+bilinear on a 2.73 mm grid is what the BJJCZ and EZCAD cards do. Bicubic costs
+~4x and needs 16 corners; revisit only if a measured table fails the criterion
+below.
+
+### The criterion for revisiting bicubic
+
+For a function sampled at spacing h, linear interpolation error is about
+`h^2 * f'' / 8`. In terms of the discrete grid that is simply:
+
+> **bilinear error (counts) ~ (largest second difference between adjacent grid
+> nodes) / 8**
+
+Position quantisation is 1 count = 2.67 um - nothing finer can be commanded. So:
+
+| Max second difference | Verdict |
+|---|---|
+| **< 8 counts** | bilinear error is below the quantisation floor; bicubic is provably pointless |
+| 8-20 counts | marginal; measure before deciding |
+| **> 20 counts** | bilinear is costing real accuracy; revisit bicubic |
+
+A one-line check against any real `.cor`. Given SLM spot sizes of 50-100 um and
+layer thickness in the tens of microns, bilinear is expected to clear this
+comfortably - but it is now a measurement rather than an opinion.
+
+## 16. The existing correction files contain no distortion data
+
+Measured 2026-08-26 against all three files in the old repo. Every one is a
+**pure linear ramp** - constant first difference, second difference exactly
+zero:
+
+| File | First difference | Second difference | What it actually is |
+|---|---|---|---|
+| `identity.cor` | 0 | 0 | all zeros, no correction at all |
+| `4_30_test1.cor` | 190.509, constant | **0.000** | pure linear stretch, ~18.6% |
+| `4_30_test3.cor` | 185.296, constant | **0.000** | pure linear stretch, ~18.1% |
+
+A real f-theta table is curved - that is its entire purpose. Exactly-constant
+first differences mean the 65 x 65 grid is being used to **scale the field**,
+not to correct distortion. test1 and test3 differ by ~0.5%, consistent with
+iterating toward a correct field size from 9-point measurements.
+
+**The lens distortion has never been characterised.** That work is still ahead.
+
+### Two different distortions - only one is the table's job
+
+| | What it is | Fixed by |
+|---|---|---|
+| **Positional** | f-theta pincushion/barrel; spot lands off where commanded | the correction table |
+| **Spot size / focus** | spot grows and deforms toward field edges | **not** the table - an optical property |
+
+Spot-size variation is compensated at *slice* time by varying power, speed or
+hatch spacing with field position. **This already works architecturally**: the
+DXF carries per-vector speed and power, so field-dependent compensation can be
+baked in by the slicer with no firmware change at all (see section 2).
+
+### Characterising the positional distortion
+
+Nine points can only fit a low-order model - scale, and perhaps keystone. They
+cannot populate a 65 x 65 grid. Two better routes, probably combined:
+
+1. **Compute a first-pass table analytically.** Two-mirror galvo systems have an
+   inherent, calculable pincushion from the two mirrors sitting at different
+   distances from the field, and f-theta residual distortion is a published
+   lens spec. Focal length + working distance + mirror separation gets most of
+   the way there.
+2. **Refine by dense measurement.** A marked grid measured optically, rather
+   than nine points.
+
+Vendor distortion data, where supplied, is often *spot size* across the field
+rather than positional - useful, but it feeds the slicer (row above), not the
+table.
+
+**Before building any of this**, read `meerk40t/balormk/correction_fitting.py`
+in the old repo - it may already fit a table from measured points, and would be
+better reused than reinvented.
