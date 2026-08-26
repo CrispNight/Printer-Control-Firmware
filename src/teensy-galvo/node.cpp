@@ -8,6 +8,7 @@
 
 #include "config.h"
 #include "console.h"
+#include "field_correction.h"
 #include "laser_io.h"
 #include "watchdog.h"
 #include "xy2_engine.h"
@@ -163,9 +164,6 @@ void onPacket(const packet_t &packet, void *)
     case MSG_LASER_PARAMS:
     case MSG_MARK_ABORT:
     case MSG_TIMING_OFFSET:
-    case MSG_FIELD_CORRECTION_BEGIN:
-    case MSG_FIELD_CORRECTION_DATA:
-    case MSG_FIELD_CORRECTION_END:
     case MSG_JOB_UPLOAD_BEGIN:
     case MSG_JOB_UPLOAD_DATA:
     case MSG_JOB_UPLOAD_END:
@@ -176,6 +174,38 @@ void onPacket(const packet_t &packet, void *)
     case MSG_SETTINGS_REQUEST:
     case MSG_SETTINGS_SET:
         link.sendAck(packet, ACK_REFUSED);
+        break;
+
+    /* --- Field correction upload ---------------------------------------- */
+
+    case MSG_FIELD_CORRECTION_BEGIN:
+        if (packet.len != sizeof(field_corr_begin_t)) {
+            link.sendAck(packet, ACK_BAD_LENGTH);
+            break;
+        }
+        {
+            field_corr_begin_t hdr;
+            memcpy(&hdr, packet.payload, sizeof(hdr));
+            link.sendAck(packet, field::upload_begin(hdr));
+        }
+        break;
+
+    case MSG_FIELD_CORRECTION_DATA:
+        if (packet.len < sizeof(field_corr_data_t)) {
+            link.sendAck(packet, ACK_BAD_LENGTH);
+            break;
+        }
+        {
+            field_corr_data_t hdr;
+            memcpy(&hdr, packet.payload, sizeof(hdr));
+            const uint8_t body = (uint8_t)(packet.len - sizeof(field_corr_data_t));
+            link.sendAck(packet,
+                         field::upload_data(hdr, packet.payload + sizeof(hdr), body));
+        }
+        break;
+
+    case MSG_FIELD_CORRECTION_END:
+        link.sendAck(packet, field::upload_end());
         break;
 
     default:

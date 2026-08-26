@@ -63,7 +63,7 @@ specification once the Teensy is done.
 | 12 | PSRAM is for job data | `[ELSEWHERE]` |
 | 13 | CAN as the inter-board transport | `[FIRMWARE]` + `[ELSEWHERE]` |
 | 14 | Recoat sequence | `[DONE]` + `[OPEN]` tradeoff |
-| 15 | Field correction format and the silent bug | `[FACT]` + `[FIRMWARE]` |
+| 15 | Field correction format and the silent bug | `[FACT]` + `[DONE]` |
 | 16 | The .cor files hold no distortion data | `[FACT]` + `[OPEN]` |
 | 17 | What the old handler revealed | `[FACT]` + `[DONE]` |
 | 18 | **Firmware work queue** | Mega done; Teensy next |
@@ -1107,9 +1107,6 @@ routing rules.
 |---|---|---|
 | Buffer depth as named constants | one-line experiment instead of surgery | 3 |
 | Fractional position accumulation | sub-count precision, round at output | 4 |
-| Field correction: load and decode | sign-magnitude decoded once, at load | 15 |
-| Field correction: bilinear + cell caching | ~270 samples share a cell; shifts, not division | 15 |
-| Field scale from the file, not a constant | with the 33-300 mm sanity band | 15 |
 | `MSG_TIMING_OFFSET` applied | pre-shift power during refill | 5 |
 | Job upload to SD, atomic commit | `MSG_JOB_UPLOAD_*` | 19 |
 | Job streaming with per-layer CRC at read | ~8192-point vector buffer (P4) | 19 |

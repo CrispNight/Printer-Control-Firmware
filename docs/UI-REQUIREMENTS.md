@@ -185,10 +185,31 @@ galvo engine, DAC and every laser line are drivable from there. `link` prints
 the protocol counters — the place to look when packets "sometimes do not
 arrive", since a climbing CRC count is a cable or noise problem.
 
+### Field correction
+
+`MSG_FIELD_CORRECTION_*` works. Upload is atomic: a failed one leaves the
+working table untouched, verified on hardware. A UI should surface three
+refusals distinctly, because they mean different things:
+
+| Refusal | Means |
+|---|---|
+| `ACK_BAD_PARAM` at BEGIN | the scale is outside 33-300 mm of field. Almost always the 1.0 placeholder the old tooling wrote into every `.cor` and never filled in. |
+| `ACK_BAD_PARAM` at DATA | a chunk arrived out of order, so a chunk was lost. Restart the upload. |
+| `ACK_BAD_CRC` at END | every chunk arrived but the table does not match its checksum. |
+
+**The existing `.cor` files carry no distortion data** — pure separable ramps,
+second differences ~1e-12. They only rescale the field, and to a size that is
+not this machine's 175 mm. Treat an uploaded table as a field scale until a
+real characterisation exists.
+
+Console `field` shows the loaded table and scale; `field map <x_um> <y_um>`
+answers "where does this bed coordinate land", which is the calibration
+question.
+
 ### Still to come
 
-Job upload and streaming, field correction, laser arming and timing, the print
-log, the job sequencer, and a `teensy_settings_t` for `MSG_SETTINGS`.
+Job upload and streaming, laser arming and timing, the print log, the job
+sequencer, and a `teensy_settings_t` for `MSG_SETTINGS`.
 
 ## ESP32
 

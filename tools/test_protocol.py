@@ -177,6 +177,15 @@ def test_invariants():
     check(p.AXIS_FLAG_POS_RESTORED & used == 0,
           "AXIS_FLAG_POS_RESTORED is a free bit")
     check(p.PURGE_FLAG_SKIP_MIN_MIX == 0x01, "PURGE_FLAG_SKIP_MIN_MIX is bit 0")
+    # These are sizeof() macros in the header, so the generator cannot evaluate
+    # them; the bindings derive them instead. If the two disagree, a sender
+    # overflows a packet on the last chunk of a bulk transfer.
+    check(p.FIELD_CORR_MAX_POINTS == 47,
+          "FIELD_CORR_MAX_POINTS matches the header's sizeof() arithmetic")
+    check(p.JOB_UPLOAD_MAX_BYTES == 184,
+          "JOB_UPLOAD_MAX_BYTES matches the header's sizeof() arithmetic")
+    check(p.FieldCorrData.SIZE + p.FIELD_CORR_MAX_POINTS * p.FieldCorrPoint.SIZE
+          <= p.PACKET_MAX_PAYLOAD, "a full correction chunk fits in one packet")
     purge = p.PurgeSet(enable=1, flags=p.PURGE_FLAG_SKIP_MIN_MIX,
                        target_o2_ppm=3000, timeout_s=1800, min_mix_s=300)
     check(len(purge.pack()) == 8, "purge_set_t packs to 8 bytes")

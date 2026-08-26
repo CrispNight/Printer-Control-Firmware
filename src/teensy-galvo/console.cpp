@@ -7,6 +7,7 @@
 
 #include "adc.h"
 #include "dac.h"
+#include "field_correction.h"
 #include "laser_io.h"
 #include "watchdog.h"
 #include "xy2_engine.h"
@@ -120,6 +121,8 @@ void print_help() {
   Serial.println(F("  status                   - engine + register state"));
   Serial.println(F("  wdt                      - watchdog + arm-latch status"));
   Serial.println(F("  link                     - protocol link counters + estop state"));
+  Serial.println(F("  field                    - field correction table + scale"));
+  Serial.println(F("  field map <x_um> <y_um>  - where a bed coordinate lands, in DAC counts"));
   Serial.println(F("  wdt starve               - stop kicking watchdog (verify FIRMWARE_ALIVE drops)"));
   Serial.println(F("  xy <X> <Y>               - static position (hex or decimal)"));
   Serial.println(F("  center                   - static center (0x8000, 0x8000)"));
@@ -163,6 +166,10 @@ void handle_line(const char* s) {
     xy2::cmd_status();
   } else if (!strcmp(s, "link")) {
     node::cmd_status();
+  } else if (!strcmp(s, "field")) {
+    field::cmd_status();
+  } else if (!strncmp(s, "field map ", 10)) {
+    field::cmd_map(s + 10);
   } else if (!strcmp(s, "wdt")) {
     watchdog::cmd_status();
   } else if (!strcmp(s, "wdt starve")) {

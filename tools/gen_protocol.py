@@ -337,6 +337,15 @@ def emit(source_hash: str, defines: dict[str, int], enums, structs) -> str:
 # Hand-written helpers appended to every generated file. They depend only on
 # the constants emitted above, so they stay correct as the header evolves.
 RUNTIME_SECTION = '''
+# --- Bulk-transfer capacities ---------------------------------------------------
+# The header computes these with sizeof(), which the generator cannot evaluate,
+# so they are derived here from the same generated struct sizes. A sender that
+# guesses a chunk size instead will overflow a packet on the last chunk.
+
+FIELD_CORR_MAX_POINTS = (PACKET_MAX_PAYLOAD - FieldCorrData.SIZE) // FieldCorrPoint.SIZE
+JOB_UPLOAD_MAX_BYTES = PACKET_MAX_PAYLOAD - JobUploadData.SIZE
+
+
 # --- Packet framing -------------------------------------------------------------
 # Layout (little-endian):
 #   SOF0 SOF1 VER SRC DST MSG FLAGS SEQ LEN  payload[LEN]  CRC16
