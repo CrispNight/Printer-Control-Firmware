@@ -5,6 +5,7 @@
 #include "console.h"
 #include "dac.h"
 #include "field_correction.h"
+#include "job_store.h"
 #include "laser_io.h"
 #include "node.h"
 #include "pins.h"
@@ -54,6 +55,7 @@ void setup() {
   xy2::print_buffer_addrs();
 
   field::begin();
+  job::begin();
   dac::init();
   adc::init();
 

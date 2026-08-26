@@ -130,10 +130,22 @@ uint8_t upload_data(const field_corr_data_t& hdr, const uint8_t* points, uint8_t
     /* In-order and accounted for. A gap that went unnoticed would shift every
      * point after it, and the table would look plausible while being wrong
      * everywhere -- which is far worse than a refused upload. */
-    if (hdr.chunk_index != g_expect_chunk) return ACK_BAD_PARAM;
-    if (hdr.point_count == 0 || hdr.point_count > FIELD_CORR_MAX_POINTS) return ACK_BAD_PARAM;
-    if (len < (uint16_t)hdr.point_count * sizeof(field_corr_point_t)) return ACK_BAD_LENGTH;
-    if ((uint32_t)g_points_in + hdr.point_count > g_want_points) return ACK_BAD_PARAM;
+    /* Any rejection ends the transfer. Sender and board now disagree about
+     * what has arrived and there is no reconciling that mid-stream, so the
+     * sender starts again from BEGIN. */
+    if (hdr.chunk_index != g_expect_chunk) { g_uploading = false; return ACK_BAD_PARAM; }
+    if (hdr.point_count == 0 || hdr.point_count > FIELD_CORR_MAX_POINTS) {
+        g_uploading = false;
+        return ACK_BAD_PARAM;
+    }
+    if (len < (uint16_t)hdr.point_count * sizeof(field_corr_point_t)) {
+        g_uploading = false;
+        return ACK_BAD_LENGTH;
+    }
+    if ((uint32_t)g_points_in + hdr.point_count > g_want_points) {
+        g_uploading = false;
+        return ACK_BAD_PARAM;
+    }
 
     for (uint16_t n = 0; n < hdr.point_count; n++) {
         field_corr_point_t pt;

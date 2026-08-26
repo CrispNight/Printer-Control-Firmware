@@ -206,10 +206,32 @@ Console `field` shows the loaded table and scale; `field map <x_um> <y_um>`
 answers "where does this bed coordinate land", which is the calibration
 question.
 
+### Job upload
+
+`MSG_JOB_UPLOAD_*` puts a job on the microSD card. Measured: **19.1 MB in 57 s
+(325 KB/s)**, 103,717 acknowledged chunks. A 43 MB job is about two minutes.
+
+Two things a UI must get right:
+
+- **`MSG_JOB_UPLOAD_END` takes seconds, not milliseconds.** The board reads the
+  whole file back off the card to verify it. Give it roughly one second per
+  200 KB before deciding it is lost. That read-back is the point: it catches a
+  card that accepted the bytes and stored something else.
+- **Any rejected chunk ends the transfer.** The sender and the board now
+  disagree about what arrived, and there is no reconciling that mid-stream, so
+  the upload restarts from BEGIN. Do not retry the single chunk.
+
+The job survives a power cycle and is identified from its own header at boot,
+so a UI should show what is on the card without needing to have uploaded it
+itself.
+
+Progress is the sender's own byte count; the board publishes none. Console
+`job` shows the card state and the job on it.
+
 ### Still to come
 
-Job upload and streaming, laser arming and timing, the print log, the job
-sequencer, and a `teensy_settings_t` for `MSG_SETTINGS`.
+Layer streaming and the job sequencer, laser arming and timing, the print log,
+and a `teensy_settings_t` for `MSG_SETTINGS`.
 
 ## ESP32
 

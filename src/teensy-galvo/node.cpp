@@ -9,6 +9,7 @@
 #include "config.h"
 #include "console.h"
 #include "field_correction.h"
+#include "job_store.h"
 #include "laser_io.h"
 #include "watchdog.h"
 #include "xy2_engine.h"
@@ -164,9 +165,6 @@ void onPacket(const packet_t &packet, void *)
     case MSG_LASER_PARAMS:
     case MSG_MARK_ABORT:
     case MSG_TIMING_OFFSET:
-    case MSG_JOB_UPLOAD_BEGIN:
-    case MSG_JOB_UPLOAD_DATA:
-    case MSG_JOB_UPLOAD_END:
     case MSG_JOB_START:
     case MSG_JOB_ABORT:
     case MSG_JOB_PAUSE:
@@ -206,6 +204,50 @@ void onPacket(const packet_t &packet, void *)
 
     case MSG_FIELD_CORRECTION_END:
         link.sendAck(packet, field::upload_end());
+        break;
+
+    /* --- Job upload to the card ------------------------------------------ */
+
+    case MSG_JOB_UPLOAD_BEGIN:
+        if (packet.len != sizeof(job_upload_begin_t)) {
+            link.sendAck(packet, ACK_BAD_LENGTH);
+            break;
+        }
+        {
+            job_upload_begin_t hdr;
+            memcpy(&hdr, packet.payload, sizeof(hdr));
+            link.sendAck(packet, job::upload_begin(hdr));
+        }
+        break;
+
+    case MSG_JOB_UPLOAD_DATA:
+        if (packet.len < sizeof(job_upload_data_t)) {
+            link.sendAck(packet, ACK_BAD_LENGTH);
+            break;
+        }
+        {
+            job_upload_data_t hdr;
+            memcpy(&hdr, packet.payload, sizeof(hdr));
+            const uint8_t body = (uint8_t)(packet.len - sizeof(job_upload_data_t));
+            link.sendAck(packet,
+                         job::upload_data(hdr, packet.payload + sizeof(hdr), body));
+        }
+        break;
+
+    case MSG_JOB_UPLOAD_END:
+        if (packet.len != sizeof(job_upload_end_t)) {
+            link.sendAck(packet, ACK_BAD_LENGTH);
+            break;
+        }
+        {
+            job_upload_end_t hdr;
+            memcpy(&hdr, packet.payload, sizeof(hdr));
+            /* Verifying the card read-back walks the whole file, which on a
+             * 43 MB job is seconds rather than milliseconds. The caller is
+             * waiting on this ACK deliberately: it is the answer to "is this
+             * job printable". */
+            link.sendAck(packet, job::upload_end(hdr));
+        }
         break;
 
     default:

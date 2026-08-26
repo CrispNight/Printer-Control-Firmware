@@ -613,10 +613,20 @@ typedef struct {
     uint16_t fault_flags;      /* FAULTBIT_* */
 } galvo_status_t;
 
-/* MSG_JOB_UPLOAD_BEGIN — announce a job file about to be written to the card. */
+/* MSG_JOB_UPLOAD_BEGIN — announce a job file about to be written to the card.
+ *
+ * The DATA messages carry the file VERBATIM, starting with its own
+ * job_file_header_t, so what lands on the card is a complete job file that can
+ * still be identified after a reboot without any of this context.
+ *
+ * total_bytes means exactly what job_file_header_t.total_bytes means —
+ * everything AFTER that header — so the two compare directly and neither
+ * acquires a second definition. The bytes actually transferred are therefore
+ * sizeof(job_file_header_t) + total_bytes, and file_crc covers the same span as
+ * its namesake: the body, not the header. */
 typedef struct {
     uint32_t job_id;
-    uint32_t total_bytes;
+    uint32_t total_bytes;   /* body bytes, excluding job_file_header_t */
     uint16_t layer_count;
     uint16_t file_crc;      /* must match job_file_header_t.file_crc */
 } job_upload_begin_t;

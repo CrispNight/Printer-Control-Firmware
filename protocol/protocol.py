@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import ClassVar, Tuple
 
-SOURCE_HASH = "feab1f6e8569cdb2"  # sha256 of the generated region of protocol.h
+SOURCE_HASH = "05527bcd3f4b9dec"  # sha256 of the generated region of protocol.h
 
 
 # --- Constants -----------------------------------------------------------
