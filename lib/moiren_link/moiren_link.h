@@ -49,13 +49,35 @@ public:
     }
 
     /* Drain the port and dispatch every complete packet. Call from loop().
-     * Bounded per call so a flooded port cannot starve the rest of the loop. */
+     * Bounded per call so a flooded port cannot starve the rest of the loop.
+     *
+     * Use this when the link owns the port outright. When something else
+     * shares it — the Teensy's text console does — that owner reads the bytes
+     * and hands the packet ones to feed() instead. */
     void poll(uint8_t max_bytes = 128)
     {
         while (max_bytes-- && port_.available() > 0) {
             feedByte((uint8_t)port_.read());
         }
     }
+
+    /* Push one received byte through the framing state machine. For a port
+     * shared with something else; see receiving(). */
+    void feed(uint8_t b) { feedByte(b); }
+
+    /* True while a packet is part-way through arriving, i.e. everything from
+     * the first SOF byte until the CRC lands or the framing gives up.
+     *
+     * This is how a shared port is split without duplicating any framing
+     * knowledge: the owner sends a byte here if this is true or if the byte is
+     * PACKET_SOF0, and treats it as ordinary data otherwise. */
+    bool receiving() const { return state_ != WAIT_SOF0; }
+
+    /* Abandon a part-received packet and go back to hunting for a start.
+     * Needed on a shared port: if a packet is cut off part-way, receiving()
+     * would otherwise stay true and the port's other user would go deaf while
+     * the decoder waited for bytes that are never coming. */
+    void resetRx() { state_ = WAIT_SOF0; idx_ = 0; }
 
     /* Send a packet. Returns false if the payload does not fit. */
     bool send(uint8_t dst, uint8_t msg, const void *payload, uint8_t len,

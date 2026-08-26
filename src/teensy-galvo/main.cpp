@@ -5,6 +5,7 @@
 #include "console.h"
 #include "dac.h"
 #include "laser_io.h"
+#include "node.h"
 #include "pins.h"
 #include "watchdog.h"
 #include "xy2_engine.h"
@@ -36,6 +37,11 @@ void setup() {
   while (!Serial && (millis() - t0) < 1500) {}
   console::print_banner();
 
+  // The protocol and the text console share this one USB port. node::poll()
+  // owns the Serial reads and routes each byte; see node.h for why that split
+  // is unambiguous rather than a guess.
+  node::begin();
+
   bool xy2_ok = xy2::start_clk_sync();
   if (!xy2_ok) {
     Serial.println(F("ERR: XY2 CLK+SYNC startup failed"));
@@ -62,7 +68,8 @@ void setup() {
 }
 
 void loop() {
-  console::poll();
+  node::poll();
+  node::tick();
   xy2::testxy_tick();
   xy2::monitor_tick();
   dac::tick();

@@ -9,8 +9,12 @@ namespace console {
 // Print the boot banner ("<board name> <chip> ... Type 'help' for commands.").
 void print_banner();
 
-// Poll Serial for input. Handles ANSI escape sequences, edits, and
-// dispatches complete lines to the command handlers. Non-blocking.
-void poll();
+// Handle one received character: ANSI escape sequences, edits, and
+// dispatching a complete line to the command handlers.
+//
+// The console no longer reads Serial itself. The port is shared with the
+// binary protocol, so node.cpp owns the reads and routes each byte to whoever
+// it belongs to -- see node.cpp for why that split is safe.
+void feed(char c);
 
 }  // namespace console

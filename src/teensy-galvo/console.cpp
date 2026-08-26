@@ -1,4 +1,5 @@
 #include "console.h"
+#include "node.h"
 
 #include <Arduino.h>
 #include <string.h>
@@ -118,6 +119,7 @@ void print_help() {
   Serial.println(F("  uptime                   - print millis() since boot"));
   Serial.println(F("  status                   - engine + register state"));
   Serial.println(F("  wdt                      - watchdog + arm-latch status"));
+  Serial.println(F("  link                     - protocol link counters + estop state"));
   Serial.println(F("  wdt starve               - stop kicking watchdog (verify FIRMWARE_ALIVE drops)"));
   Serial.println(F("  xy <X> <Y>               - static position (hex or decimal)"));
   Serial.println(F("  center                   - static center (0x8000, 0x8000)"));
@@ -159,6 +161,8 @@ void handle_line(const char* s) {
     Serial.println(millis());
   } else if (!strcmp(s, "status")) {
     xy2::cmd_status();
+  } else if (!strcmp(s, "link")) {
+    node::cmd_status();
   } else if (!strcmp(s, "wdt")) {
     watchdog::cmd_status();
   } else if (!strcmp(s, "wdt starve")) {
@@ -300,59 +304,55 @@ void print_banner() {
   Serial.println(F("Type 'help' for commands."));
 }
 
-void poll() {
-  while (Serial.available()) {
-    char c = (char)Serial.read();
+void feed(char c) {
+  // ANSI escape sequences: ESC [ A/B/C/D (arrows), H (home), F (end), 3~ (delete).
+  if (c == 0x1B) { g_esc_state = 1; return; }
+  if (g_esc_state == 1) {
+    if (c == '[') { g_esc_state = 2; return; }
+    g_esc_state = 0;
+    // fall through: ESC followed by non-'[' means process this char normally.
+  }
+  if (g_esc_state == 2) {
+    if (c == 'A') { g_esc_state = 0; recall_history(+1); return; }
+    if (c == 'B') { g_esc_state = 0; recall_history(-1); return; }
+    if (c == 'C') { g_esc_state = 0; cursor_right(); g_history_cursor = -1; return; }
+    if (c == 'D') { g_esc_state = 0; cursor_left();  g_history_cursor = -1; return; }
+    if (c == 'H') { g_esc_state = 0; cursor_home();  g_history_cursor = -1; return; }
+    if (c == 'F') { g_esc_state = 0; cursor_end();   g_history_cursor = -1; return; }
+    if (c == '3') { g_esc_state = 3; return; }  // Delete: ESC[3~
+    if (c == '1') { g_esc_state = 3; return; }  // Home (some terms): ESC[1~
+    if (c == '4') { g_esc_state = 3; return; }  // End (some terms):  ESC[4~
+    g_esc_state = 0;
+    return;
+  }
+  if (g_esc_state == 3) {
+    if (c == '~') { del_at_cursor(); g_history_cursor = -1; }
+    g_esc_state = 0;
+    return;
+  }
 
-    // ANSI escape sequences: ESC [ A/B/C/D (arrows), H (home), F (end), 3~ (delete).
-    if (c == 0x1B) { g_esc_state = 1; continue; }
-    if (g_esc_state == 1) {
-      if (c == '[') { g_esc_state = 2; continue; }
-      g_esc_state = 0;
-      // fall through: ESC followed by non-'[' means process this char normally.
-    }
-    if (g_esc_state == 2) {
-      if (c == 'A') { g_esc_state = 0; recall_history(+1); continue; }
-      if (c == 'B') { g_esc_state = 0; recall_history(-1); continue; }
-      if (c == 'C') { g_esc_state = 0; cursor_right(); g_history_cursor = -1; continue; }
-      if (c == 'D') { g_esc_state = 0; cursor_left();  g_history_cursor = -1; continue; }
-      if (c == 'H') { g_esc_state = 0; cursor_home();  g_history_cursor = -1; continue; }
-      if (c == 'F') { g_esc_state = 0; cursor_end();   g_history_cursor = -1; continue; }
-      if (c == '3') { g_esc_state = 3; continue; }  // Delete: ESC[3~
-      if (c == '1') { g_esc_state = 3; continue; }  // Home (some terms): ESC[1~
-      if (c == '4') { g_esc_state = 3; continue; }  // End (some terms):  ESC[4~
-      g_esc_state = 0;
-      continue;
-    }
-    if (g_esc_state == 3) {
-      if (c == '~') { del_at_cursor(); g_history_cursor = -1; }
-      g_esc_state = 0;
-      continue;
-    }
+  // Backspace (BS 0x08) or DEL (0x7F). Different terminals map differently.
+  if (c == 0x08 || c == 0x7F) {
+    backspace();
+    g_history_cursor = -1;
+    return;
+  }
 
-    // Backspace (BS 0x08) or DEL (0x7F). Different terminals map differently.
-    if (c == 0x08 || c == 0x7F) {
-      backspace();
-      g_history_cursor = -1;
-      continue;
-    }
+  if (c == '\r' || c == '\n') {
+    Serial.write('\r');
+    Serial.write('\n');
+    g_line[g_line_len] = '\0';
+    store_history(g_line);
+    g_history_cursor = -1;
+    handle_line(g_line);
+    g_line_len = 0;
+    g_line_cursor = 0;
+    return;
+  }
 
-    if (c == '\r' || c == '\n') {
-      Serial.write('\r');
-      Serial.write('\n');
-      g_line[g_line_len] = '\0';
-      store_history(g_line);
-      g_history_cursor = -1;
-      handle_line(g_line);
-      g_line_len = 0;
-      g_line_cursor = 0;
-      continue;
-    }
-
-    if (c >= 0x20 && c < 0x7F) {
-      insert_char(c);
-      g_history_cursor = -1;
-    }
+  if (c >= 0x20 && c < 0x7F) {
+  insert_char(c);
+  g_history_cursor = -1;
   }
 }
 

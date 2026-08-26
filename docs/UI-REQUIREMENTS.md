@@ -9,7 +9,8 @@ redone.
 Nothing here is a wire-format reference. That is `protocol/PROTOCOL.md`, which
 this points at rather than repeats.
 
-**Status:** Arduino Mega complete. Teensy and ESP32 outstanding.
+**Status:** Arduino Mega complete. Teensy speaks the protocol but its laser,
+galvo and job surfaces are not built. ESP32 outstanding.
 
 ---
 
@@ -157,8 +158,37 @@ that demands a clear for an open door will be cleared after every powder load.
 
 ## Teensy
 
-Outstanding. Will cover job upload and streaming, field correction, laser
-arming and timing, the print log, and the job sequencer.
+### What answers today
+
+Identity (`MSG_HELLO`), liveness (`MSG_HEARTBEAT`, 2 Hz), state
+(`MSG_STATE_REQUEST`), and `MSG_GALVO_STATUS` once a second. `MSG_ESTOP` is
+real: every laser command line drops, the laser's own E-stop input is asserted,
+the interlock relay opens and the beam freezes where it stands. It latches, and
+only a reset clears it.
+
+`galvo_status_t.laser_state` reports `DISARMED` until the hardware arm latch is
+clocked, because until then no emission is physically possible whatever the
+firmware believes.
+
+### What is refused, and why that matters to a UI
+
+Laser arming and parameters, mark abort, timing offset, field correction, job
+upload, and job control all answer `ACK_REFUSED`. They are **not** silently
+accepted. A UI should show these as unavailable rather than offering a control
+that will fail — and should never interpret `ACK_REFUSED` here as a fault.
+
+`galvo_status_t.x_um` / `y_um` / `points_remaining` are zero and will stay zero
+until the marking path lands. They are not a position readout yet.
+
+The board still has its text console, and it is the bring-up interface: the
+galvo engine, DAC and every laser line are drivable from there. `link` prints
+the protocol counters — the place to look when packets "sometimes do not
+arrive", since a climbing CRC count is a cable or noise problem.
+
+### Still to come
+
+Job upload and streaming, field correction, laser arming and timing, the print
+log, the job sequencer, and a `teensy_settings_t` for `MSG_SETTINGS`.
 
 ## ESP32
 

@@ -197,6 +197,24 @@ Where a command carries the same quantity — `purge_set_t.target_o2_ppm`,
 `recoat_cycle_t.settle_ms` — **zero means "use the stored setting"**, so a
 one-off run can override without disturbing what the settings page holds.
 
+#### The Teensy shares one port between packets and a text console
+
+The galvo board carries both on a single USB serial connection, with no mode
+switch and no second port. A packet always starts with `0xA5`, which a terminal
+cannot produce — it is outside the 7-bit range a keyboard emits — so the board
+routes each received byte to the decoder if a packet is in progress or that
+byte opens one, and to the console otherwise.
+
+**A host must therefore skip non-packet bytes rather than treat them as an
+error.** The boot banner, console replies and diagnostic lines all arrive in
+the same stream. The `PacketDecoder` in the generated Python bindings already
+does this. Packets are written in one call, so console text never lands inside
+one.
+
+A packet cut off part-way is abandoned after a short gap, so a truncated frame
+cannot leave the board deaf to typing. `tools/test_demux.py` covers the routing
+rules including that case.
+
 ### `0x1X` — machine state, job control, job upload
 
 | Id | Name | Payload |

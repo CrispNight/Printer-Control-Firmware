@@ -1080,11 +1080,21 @@ protecting the top of the piston travel, where there is no limit switch. A
 storage medium that silently returns wrong data after wearing out is a storage
 medium that silently removes that protection.
 
-### Teensy - ported and building, speaks no protocol yet
+### Teensy - speaks the protocol; the laser and job surfaces are not built
+
+Protocol wiring landed: `src/teensy-galvo/node.cpp` carries identity, liveness,
+state, galvo status and a real `MSG_ESTOP`. Everything that reaches the laser or
+the galvo is refused rather than stubbed.
+
+The console and the protocol share one USB port. `console::poll()` became
+`console::feed(char)` so `node::poll()` owns the reads and routes each byte;
+the link reports whether it is mid-packet, so no framing knowledge is
+duplicated. A truncated packet is abandoned after 250 ms, which is what stops
+it swallowing everything typed afterwards. `tools/test_demux.py` covers the
+routing rules.
 
 | Item | Notes | Section |
 |---|---|---|
-| Wire to the protocol | keep the console; `0xA5` never appears in typed text, so both share the port | - |
 | Buffer depth as named constants | one-line experiment instead of surgery | 3 |
 | Fractional position accumulation | sub-count precision, round at output | 4 |
 | Field correction: load and decode | sign-magnitude decoded once, at load | 15 |
