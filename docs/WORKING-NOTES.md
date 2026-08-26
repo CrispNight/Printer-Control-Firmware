@@ -487,9 +487,22 @@ per layer, which over hundreds or thousands of layers is hours. So park mode
 must be a **per-job parameter, not a compile-time choice**, so the tradeoff can
 be measured rather than argued.
 
-A future blade-lift axis would resolve it properly: raise the blade and do the
-return traverse *during* marking, so it costs no wall-clock at all. That is a
-mechanical change rather than firmware, but the axis enum should leave room.
+**Nothing may be over the print bed while marking.** The laser would strike the
+recoater - destroying the blade and ruining the print. Any scheme that parks or
+traverses over the bed during a mark is a non-starter. (An earlier draft of this
+note suggested traversing during marking with the blade raised. That was wrong
+and dangerous; it is recorded here so nobody re-proposes it.)
+
+Pre-staging therefore means keeping the powder pile just *outside* the print
+area on the near side, shortening the traverse without ever being over the bed.
+
+A future blade-lift axis serves a different purpose: tilt the blade ~1 mm above
+the print layer so the return traverse clears the powder **without moving the
+build plate at all**. The gain is *positional repeatability*, not overlapped
+time - the build plate is the axis that defines layer thickness and is the most
+accuracy-critical in the machine, so not cycling it down and back up avoids
+backlash and lost position. That is a mechanical change rather than firmware,
+but the axis enum should leave room for `AXIS_BLADE_LIFT`.
 
 **Struct changes:** `recoat_cycle_t.flags` becomes an explicit **park mode**
 (`PARK_OVERFLOW` / `PARK_SUPPLY` / `PARK_STAGED`), plus a **clearance drop**
@@ -579,11 +592,85 @@ Three properties, each killing part of the old failure:
 
 Persist to SD or flash on the Teensy so the calibration survives without a PC.
 
-### Two open questions
+### The header scale factor - resolved
 
-- **The scale factor at header double index 43** - how it relates to the
-  firmware's `374.5 counts/mm` field scale. If the .cor file's scale should
-  drive that constant, the two must not be set independently.
-- **Interpolation.** 65 points across +/-30,000 counts is ~937 counts between
-  nodes, so the firmware must interpolate between grid points. The BJJCZ card
-  did this internally; ours will have to, and the method affects accuracy.
+Traced through `meerk40t/balormk/gui/balorconfig.py`:
+
+```python
+scale = GalvoController.get_scale_from_correction_file(self.context.corfile)
+self.context.lens_size = f"{65536.0 / scale:.03f}mm"
+```
+
+So **scale is counts per millimetre**, and `65536 / scale` is the lens field
+width in mm. It is re-read whenever the correction file changes.
+
+And it closes the loop on the firmware constant:
+
+```
+65536 / 175 mm = 374.49  ->  the firmware's 374.5 counts/mm is a 175 mm lens
+```
+
+The +/-30,000 count safety limit is 30000 / 374.5 = 80.1 mm half-field, which
+sits inside a 175 mm nominal field. All consistent.
+
+**So the .cor file should drive the field scale, not a hardcoded constant.**
+Change the lens, load the matching correction file, and counts/mm updates with
+it. Two independently-set values would eventually disagree, and the failure
+would be a quietly mis-scaled part.
+
+Carry the scale in `MSG_FIELD_CORRECTION_BEGIN` alongside the grid size and CRC.
+
+Exact offset, for the parser: after the 22-byte label, skip **2** bytes, then 63
+doubles - scale is index 43. That lands at `0x210`, matching the 506-byte header
+figure above (2 + 63*8 = 506).
+
+### Interpolation - resolved
+
+**Why 65 and not 64.** 65 nodes means 64 intervals, and a 16-bit field is 65536
+counts, so the grid spacing is exactly **1024 counts** - a power of two. That is
+almost certainly why the grid size was chosen, and it makes the lookup
+division-free:
+
+```c
+i  = x >> 10;      /* cell index, 0..63 */
+fx = x & 0x3FF;    /* fraction within the cell, 0..1023 */
+```
+
+**Bilinear, two-step, integer only** (per axis, so 6 multiplies for dx and dy):
+
+```c
+a = T00 + (((T10 - T00) * fx) >> 10);
+b = T01 + (((T11 - T01) * fx) >> 10);
+d = a   + (((b   - a  ) * fy) >> 10);
+```
+
+**Cost is a non-issue.** Roughly 40-60 cycles per sample including the eight
+table loads and index arithmetic. At 100 kHz that is 4-6 M cycles/s out of 600 M
+- **under 1% CPU.**
+
+**The optimisation that matters is cell caching, not arithmetic.** At 1000 mm/s
+the position advances ~3.75 counts per sample while a cell is 1024 counts wide,
+so roughly **270 consecutive samples land in the same cell**. Compare `x >> 10`
+and `y >> 10` against the cached cell and reload the four corners only when it
+changes. That removes almost all the memory traffic; the multiplies were never
+the problem.
+
+**Storage:** `int16_t table[65][65][2]` interleaved as (dx, dy) pairs so both
+components of a corner share a cache line - 16.9 KB. Put it in **DTCM**, which
+is single-cycle and *not* cached, sidestepping the D-cache coherency traps the
+DMA path already had to solve once with OCRAM.
+
+**Decode sign-magnitude once, at load time.** Convert to ordinary two's
+complement `int16_t` when reading the file into the table, so the hot path never
+touches the `0x8000` sign-flag encoding.
+
+**Apply per sample, not per vector endpoint.** Correcting only the endpoints and
+drawing a straight line between them is wrong: the true corrected path bows,
+and on a 175 mm field a long vector's midpoint would visibly miss. Correction
+belongs in the sample loop, after fractional position accumulation and before
+XY2-100 encoding, with the result clamped to the +/-30,000 limit.
+
+**Bilinear is enough.** f-theta distortion is smooth and low-order, and bilinear
+on a 2.73 mm grid is exactly what the BJJCZ and EZCAD cards do - proven in
+practice. Bicubic would cost ~4x and need 16 corners; not worth it unless
+measurement shows bilinear is the limiting error term.
