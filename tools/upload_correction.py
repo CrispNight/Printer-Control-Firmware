@@ -106,7 +106,7 @@ def ref_apply(x_um, y_um, scale_mcpmm, dx, dy, loaded):
 
 class Board:
     def __init__(self, port):
-        self.ser = serial.Serial(port, 115200, timeout=0.1)
+        self.ser = serial.Serial(port, 115200, timeout=0.01)
         self.dec = p.PacketDecoder()
         self.text = bytearray()
         self.seq = 0
@@ -117,7 +117,10 @@ class Board:
         two-second upload into a minute."""
         packets, end = [], time.time() + seconds
         while time.time() < end:
-            chunk = self.ser.read(512)
+            # read(n) blocks for the WHOLE port timeout when fewer than n bytes
+            # are waiting. Doing that once per chunk is what made a 17 KB upload
+            # take ten seconds -- it was the tool, not the link.
+            chunk = self.ser.read(self.ser.in_waiting or 1)
             if chunk:
                 self.text.extend(chunk)
                 for q in self.dec.feed(chunk):

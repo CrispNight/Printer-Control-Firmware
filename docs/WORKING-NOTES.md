@@ -1037,6 +1037,29 @@ set the flag is a UI question - mechanism on the board, policy upstream.
 The limit switches remain unconditional: nothing in the firmware can stop a
 switch halting an axis in the direction of travel.
 
+#### Measured: USB upload throughput  `[FACT]`
+
+Measured 2026-08-26 against the board, uploading the 65x65 correction table:
+**16.9 KB of payload in 90 acknowledged chunks takes 0.1 s**, repeatably. That
+is about 170 KB/s with a full round trip per 188-byte chunk, or roughly 1.1 ms
+per exchange - ordinary USB CDC latency.
+
+Worth recording because a first measurement said ten seconds, which would have
+been an alarming number to carry into the job-upload design. That was entirely
+the host tool: pyserial's `read(n)` blocks for the *whole* port timeout when
+fewer than n bytes are waiting, so every chunk cost a 100 ms stall. Reading
+`in_waiting` instead removed all of it. **The link was never slow.**
+
+What it means for section 19: at this rate a 1 MB job uploads in about six
+seconds and a 10 MB one in about a minute, with the safety of an acknowledgement
+per chunk. Streaming without per-chunk ACKs - relying on the in-order chunk
+index to catch a gap and the whole-file CRC at the end - would remove the
+round-trip cost entirely, but there is no need to reach for it. The SD card
+write is more likely to be the limit than USB.
+
+Note that the 115200 in the port settings is meaningless here: this is USB CDC,
+a virtual serial port, and the baud rate is not used.
+
 #### EEPROM endurance, spelled out
 
 An EEPROM cell tolerates about **100,000 write/erase cycles**. Writing the same

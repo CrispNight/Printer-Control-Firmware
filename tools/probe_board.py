@@ -54,7 +54,7 @@ def find_port():
 
 class Board:
     def __init__(self, port):
-        self.ser = serial.Serial(port, 115200, timeout=0.1)
+        self.ser = serial.Serial(port, 115200, timeout=0.01)
         self.dec = p.PacketDecoder()
         self.split = _Splitter()
 
@@ -64,12 +64,14 @@ class Board:
         text, packets = bytearray(), []
         end = time.time() + seconds
         while time.time() < end:
-            chunk = self.ser.read(256)
+            # read(n) blocks for the whole port timeout when fewer than n
+            # bytes are waiting, which turns every exchange into a stall.
+            chunk = self.ser.read(self.ser.in_waiting or 1)
             if chunk:
                 text.extend(chunk)
                 packets.extend(self.dec.feed(chunk))
             else:
-                time.sleep(0.02)
+                time.sleep(0.002)
         return bytes(text), packets
 
     def send(self, msg, payload=b"", seq=1):
