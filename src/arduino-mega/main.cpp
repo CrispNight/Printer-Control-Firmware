@@ -243,6 +243,23 @@ void handleAxisMove(const packet_t &packet)
         link.sendAck(packet, ACK_BUSY);
         return;
     }
+
+    if (req.flags & AXIS_MOVE_NO_BOUNDS) {
+        /* This is the maintenance move that runs a piston to the top of its
+         * rail, where there is no switch to catch it. It is only allowed when
+         * the machine is otherwise still, and it never passes silently — if it
+         * ever shows up in a log during a print, something is wrong upstream.
+         *
+         * The Mega cannot tell whether the Teensy is mid-mark; refusing a move
+         * during marking is the Teensy's job. This is the part the Mega can
+         * see for itself. */
+        if (motion::anyBusy() || machine_state == STATE_PRINTING) {
+            link.sendAck(packet, ACK_BAD_STATE);
+            return;
+        }
+        link.sendLog(NODE_BROADCAST, LOG_WARN, "move with travel limits off");
+    }
+
     if (!motion::moveTo(req.axis, req.target_um, req.speed_um_s,
                         req.accel_um_s2, req.flags)) {
         link.sendAck(packet, ACK_BUSY);

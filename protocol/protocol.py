@@ -12,12 +12,12 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import ClassVar, Tuple
 
-SOURCE_HASH = "98413528e3b3b799"  # sha256 of the generated region of protocol.h
+SOURCE_HASH = "8344881b6f19ecbb"  # sha256 of the generated region of protocol.h
 
 
 # --- Constants -----------------------------------------------------------
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 PACKET_SOF0 = 0xA5
 PACKET_SOF1 = 0x5A
 PACKET_HEADER_LEN = 9
@@ -32,6 +32,7 @@ NODE_AIRFLOW = 3
 AXIS_MOVE_RELATIVE = 1
 AXIS_MOVE_APPROACH_NEG = 2
 AXIS_MOVE_APPROACH_POS = 4
+AXIS_MOVE_NO_BOUNDS = 8
 AXIS_FLAG_HOMED = 1
 AXIS_FLAG_MOVING = 2
 AXIS_FLAG_AT_LIMIT = 4
@@ -745,20 +746,21 @@ class SensorReport:
         )
 
 
-_S_PURGESET = struct.Struct("<BBHH")
+_S_PURGESET = struct.Struct("<BBHHH")
 
 
 @dataclass
 class PurgeSet:
-    """C `purge_set_t` — 6 bytes on the wire."""
+    """C `purge_set_t` — 8 bytes on the wire."""
 
     enable: int = 0
     flags: int = 0
     target_o2_ppm: int = 0
     timeout_s: int = 0
+    min_mix_s: int = 0
 
-    FORMAT: ClassVar[str] = "<BBHH"
-    SIZE: ClassVar[int] = 6
+    FORMAT: ClassVar[str] = "<BBHHH"
+    SIZE: ClassVar[int] = 8
 
     def pack(self) -> bytes:
         return _S_PURGESET.pack(
@@ -766,6 +768,7 @@ class PurgeSet:
             self.flags,
             self.target_o2_ppm,
             self.timeout_s,
+            self.min_mix_s,
         )
 
     @classmethod
@@ -776,6 +779,7 @@ class PurgeSet:
             flags=v[1],
             target_o2_ppm=v[2],
             timeout_s=v[3],
+            min_mix_s=v[4],
         )
 
 

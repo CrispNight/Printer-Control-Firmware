@@ -43,6 +43,8 @@ record_t live;        /* what we would write */
 record_t written;     /* what is already in EEPROM */
 bool     dirty;
 uint32_t still_since_ms;
+uint32_t last_write_ms;
+bool     ever_written;
 
 /* Byte-at-a-time write in progress. */
 bool     writing;
@@ -92,6 +94,8 @@ void begin()
     write_count = 0;
     next_slot = 0;
     still_since_ms = millis();
+    last_write_ms = millis();
+    ever_written = false;
 
     /* Find the newest good record. A blank or corrupt EEPROM simply yields
      * nothing, and every axis boots with no position. */
@@ -134,6 +138,8 @@ void service()
             written = live;
             next_slot = (uint16_t)((next_slot + 1) % SLOT_COUNT);
             write_count++;
+            last_write_ms = millis();
+            ever_written = true;
         }
         return;
     }
@@ -147,6 +153,10 @@ void service()
 
     if (!dirty) return;
     if (millis() - still_since_ms < PERSIST_SETTLE_MS) return;
+    /* Spacing, so a burst of setup jogs becomes one record rather than one
+     * each. A print's per-layer moves are much further apart than this, so
+     * every layer is still saved. */
+    if (ever_written && (millis() - last_write_ms) < PERSIST_MIN_INTERVAL_MS) return;
 
     beginWrite();
 }

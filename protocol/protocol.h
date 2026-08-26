@@ -37,7 +37,7 @@ extern "C" {
 
 /* Bump on ANY change to packet layout, message ids, or payload structs.
  * Nodes refuse to talk to a peer reporting a different major version. */
-#define PROTOCOL_VERSION 3
+#define PROTOCOL_VERSION 4
 
 /* --- Packet framing ------------------------------------------------------ */
 
@@ -175,6 +175,21 @@ typedef enum {
 #define AXIS_MOVE_RELATIVE     0x01
 #define AXIS_MOVE_APPROACH_NEG 0x02
 #define AXIS_MOVE_APPROACH_POS 0x04
+
+/* Ignore the software travel limits for THIS MOVE ONLY. It is not a mode and
+ * it does not stick: every unbounded move has to ask again.
+ *
+ * The build and supply cylinders have no top limit switch — there was no room
+ * for one in this build of the machine — so the software limit is normally the
+ * only thing at that end. But maintenance genuinely needs to go past it: the
+ * pistons must be driven to the very top of the rail to get the build plate
+ * adapters out, and re-homing first is slow and disturbs whatever else is
+ * being reset.
+ *
+ * So this exists for troubleshooting and maintenance, and the node is expected
+ * to refuse it whenever the machine is doing something, and to say loudly when
+ * it honours it. Limit switches are NOT affected — nothing turns those off. */
+#define AXIS_MOVE_NO_BOUNDS    0x08
 
 /* axis_status_t.flags bits.
  *
@@ -472,6 +487,10 @@ typedef struct {
     uint8_t  flags;          /* PURGE_FLAG_* */
     uint16_t target_o2_ppm;  /* stage 2 aim; 0 = the node's default */
     uint16_t timeout_s;      /* bounds stage 2; 0 = the node's default */
+    uint16_t min_mix_s;      /* shortest stage 2 before the O2 reading may end
+                              * it; 0 = the node's default. A settings page
+                              * owns this — it is dialled in per machine and
+                              * per gas, not per job. */
 } purge_set_t;
 
 /* MSG_LASER_ARM — key must equal LASER_ARM_KEY or the packet is refused. */

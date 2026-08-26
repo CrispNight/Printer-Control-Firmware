@@ -1,6 +1,6 @@
 # Moiren SLM — machine communication protocol
 
-**Version 3.** `protocol/protocol.h` is the single source of truth. This
+**Version 4.** `protocol/protocol.h` is the single source of truth. This
 document explains it; it does not define it. If the two disagree, the header
 wins and this file is the bug.
 
@@ -258,6 +258,26 @@ is also the way to recover after moving something by hand.
 be, hitting a switch in the direction of travel stops the axis immediately and
 raises `FAULT_LIMIT_UNEXPECT`. No flag, mode or override changes that.
 
+#### Going past the software limit on purpose
+
+`AXIS_MOVE_NO_BOUNDS` drops the software travel limits **for one move**. It is
+not a mode and it does not stick.
+
+It exists because maintenance needs it: the build and supply pistons have to be
+driven to the very top of their rail to get the build plate adapters out, there
+is no top limit switch to stop at — there was no room for one in this build of
+the machine — and homing first is slow and disturbs whatever else is being
+reset. It is a troubleshooting and maintenance action, not a printing one.
+
+The Mega refuses it (`ACK_BAD_STATE`) while any axis is moving or a job is
+printing, and logs `LOG_WARN` whenever it honours one, so an unbounded move can
+never happen quietly. Refusing it during a *mark* is the Teensy's job — the
+Mega cannot see that from where it sits.
+
+Whether an operator is allowed to set the flag at all is a UI question, not a
+firmware one. The mechanism is on the board; the policy belongs upstream, which
+is where a user access level would live.
+
 `axis_move_t.flags` can force a direction of approach
 (`AXIS_MOVE_APPROACH_NEG` / `_POS`). The mechanics have real backlash, so the
 bed always arrives at a layer height the same way: `APPROACH_NEG` overshoots
@@ -359,8 +379,16 @@ continuously.
                                             number while gas still flows in
 ```
 
-`target_o2_ppm` is the stage 2 aim and `timeout_s` bounds stage 2; both fall
-back to the machine's defaults when zero. A stage 2 timeout does **not** abort
+`target_o2_ppm` is the stage 2 aim, `timeout_s` bounds stage 2, and
+`min_mix_s` is the shortest stage 2 the O2 reading is allowed to end. All three
+fall back to the node's defaults when zero.
+
+`min_mix_s` is a real floor rather than padding: oxygen reads low at the sensor
+long before the chamber is homogeneous, and the leftover pockets are what ruin
+a part. It wants dialling in per machine and per gas, so a settings page owns
+it rather than the firmware. `PURGE_FLAG_SKIP_MIN_MIX` removes it entirely for
+testing — a flag someone has to set, so it cannot be reached by a value
+drifting to zero. A stage 2 timeout does **not** abort
 — it proceeds to verification, because the hold is what actually decides.
 
 The whole sequence can take **around forty minutes**, which is exactly why it

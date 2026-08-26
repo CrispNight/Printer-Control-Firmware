@@ -229,7 +229,9 @@ uint8_t setPurge(const purge_set_t &req)
     purge_timeout_s  = req.timeout_s ? req.timeout_s : PURGE_STAGE2_TIMEOUT_S;
     /* Skipping the mix minimum is a deliberate testing action, never a
      * default: the pockets it exists to clear are what ruin a part. */
-    purge_min_mix_s  = (req.flags & PURGE_FLAG_SKIP_MIN_MIX) ? 0 : PURGE_STAGE2_MIN_S;
+    purge_min_mix_s  = (req.flags & PURGE_FLAG_SKIP_MIN_MIX)
+                           ? 0
+                           : (req.min_mix_s ? req.min_mix_s : PURGE_STAGE2_MIN_S);
     purge_result     = PURGE_RESULT_NONE;
     purge_open_s     = 0;
     purge_start_ms   = millis();

@@ -193,14 +193,15 @@ static const uint16_t LIGHT_SETTLE_DEFAULT_MS[3] = {0, 1500, 1000};
  * The whole thing takes up to ~40 minutes, which is exactly why it must not
  * depend on a host staying connected. */
 static const uint16_t PURGE_STAGE1_S        = 480;   /* displace: 5+ min, blower off */
-/* Minimum mixing time before the O2 reading is allowed to end stage 2. The PC
- * used 60 s; the machine owner wants at least three minutes and preferably
- * four or five, because oxygen reads low at the sensor long before the chamber
- * is homogeneous and the leftover pockets are what ruin a part. Five minutes
- * is the conservative end of that, and it usually costs nothing: stage 2 runs
- * until the target anyway, so this only bites when O2 falls unusually fast.
- * PURGE_FLAG_SKIP_MIN_MIX bypasses it for testing. */
-static const uint16_t PURGE_STAGE2_MIN_S    = 300;
+/* Shortest stage 2 before the O2 reading is allowed to end it. Oxygen reads
+ * low at the sensor long before the chamber is homogeneous, and the leftover
+ * pockets are what ruin a part - so this is a real floor, not padding.
+ *
+ * This is the DEFAULT only. It wants dialling in per machine and per gas
+ * rather than being decided here, so purge_set_t.min_mix_s overrides it and a
+ * settings page owns the value. PURGE_FLAG_SKIP_MIN_MIX removes it entirely
+ * for testing. */
+static const uint16_t PURGE_STAGE2_MIN_S    = 60;
 static const uint16_t PURGE_STAGE2_TIMEOUT_S = 1800; /* then move on regardless */
 static const uint16_t PURGE_STAGE3_S        = 30;    /* verification hold */
 
@@ -239,6 +240,14 @@ static const uint16_t PERSIST_SLOT_COUNT = 128;
 
 /* Every axis has to be still this long before a record is written. */
 static const uint16_t PERSIST_SETTLE_MS = 2000;
+
+/* And records are spaced at least this far apart. A print moves the pistons
+ * once a layer with far more than this between, so every layer still gets
+ * saved. Jogging during setup does not: a burst of jog commands coalesces into
+ * one record, which is all it is worth - a setup position is about to be
+ * redone anyway. The cost of the spacing is that an unexpected power cut can
+ * lose up to this much movement, which during a print is at most one layer. */
+static const uint16_t PERSIST_MIN_INTERVAL_MS = 10000;
 
 /* Changes smaller than this are not worth an EEPROM cycle; this is really just
  * filtering the step/micrometre rounding. */

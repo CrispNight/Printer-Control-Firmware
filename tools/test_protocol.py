@@ -155,7 +155,7 @@ def test_invariants():
           "NODE_AIRFLOW still points at the Mega (update PROTOCOL.md when it moves)")
     check(p.PACKET_MAX_LEN == p.PACKET_HEADER_LEN + p.PACKET_MAX_PAYLOAD + p.PACKET_CRC_LEN,
           "PACKET_MAX_LEN agrees with its parts")
-    check(p.PROTOCOL_VERSION == 3, "PROTOCOL_VERSION is 3")
+    check(p.PROTOCOL_VERSION == 4, "PROTOCOL_VERSION is 4")
     check(p.AXIS_FLAG_POS_RESTORED == 0x20,
           "AXIS_FLAG_POS_RESTORED does not collide with the other axis flags")
     used = (p.AXIS_FLAG_HOMED | p.AXIS_FLAG_MOVING | p.AXIS_FLAG_AT_LIMIT |
@@ -164,9 +164,14 @@ def test_invariants():
           "AXIS_FLAG_POS_RESTORED is a free bit")
     check(p.PURGE_FLAG_SKIP_MIN_MIX == 0x01, "PURGE_FLAG_SKIP_MIN_MIX is bit 0")
     purge = p.PurgeSet(enable=1, flags=p.PURGE_FLAG_SKIP_MIN_MIX,
-                       target_o2_ppm=3000, timeout_s=1800)
-    check(len(purge.pack()) == 6,
-          "purge_set_t still packs to 6 bytes after reserved became flags")
+                       target_o2_ppm=3000, timeout_s=1800, min_mix_s=300)
+    check(len(purge.pack()) == 8, "purge_set_t packs to 8 bytes")
+    check(p.PurgeSet.unpack(purge.pack()).min_mix_s == 300,
+          "purge_set_t.min_mix_s survives a round trip")
+    moveflags = (p.AXIS_MOVE_RELATIVE | p.AXIS_MOVE_APPROACH_NEG |
+                 p.AXIS_MOVE_APPROACH_POS)
+    check(p.AXIS_MOVE_NO_BOUNDS & moveflags == 0,
+          "AXIS_MOVE_NO_BOUNDS is a free bit")
     check(p.PurgeSet.unpack(purge.pack()).flags == p.PURGE_FLAG_SKIP_MIN_MIX,
           "purge_set_t.flags survives a round trip")
 

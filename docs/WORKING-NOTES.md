@@ -1001,14 +1001,50 @@ been still for two seconds and something actually changed, which works out at
 roughly one per layer. 128 slots of wear levelling puts that over 12 million
 layers against the 100k-cycle endurance.
 
-**Still not built, deliberately:** the per-move bounds escape
-(`AXIS_MOVE_NO_BOUNDS`). Once the pistons keep their zero across reboots, the
-case for it largely evaporates - it was only needed because bounds could never
-apply. The machine owner raised a caution about it, and it is the one part of
-the original proposal that could actually drive a piston into the top of its
-travel. Revisit only with a concrete need. Note that the limit switches are
-unconditional either way: nothing in the firmware can make a switch not stop an
-axis.
+**`AXIS_MOVE_NO_BOUNDS` is built**, after the machine owner supplied the
+concrete need I had assumed away: the pistons must be driven to the very top of
+their rail to get the build plate adapters out. There is no switch there
+because there was no room for one in this build - that changes in the next
+machine - and homing first is slow and disturbs whatever else is being reset.
+
+Per move, never sticky. The Mega refuses it while any axis is moving or a job
+is printing, and logs `LOG_WARN` every time it honours one. Refusing it during
+a mark is the Teensy's job; the Mega cannot see that. Whether an operator may
+set the flag is a UI question - mechanism on the board, policy upstream.
+
+The limit switches remain unconditional: nothing in the firmware can stop a
+switch halting an axis in the direction of travel.
+
+#### EEPROM endurance, spelled out
+
+An EEPROM cell tolerates about **100,000 write/erase cycles**. Writing the same
+bytes every layer would burn through that in 100,000 layers - roughly **100
+thousand-layer prints** - and then the store starts silently returning wrong
+data. That is the whole reason for the rotating slots.
+
+With 128 slots the record moves on each time, so any one slot is rewritten only
+once every 128 records: 128 x 100,000 = **12.8 million records**, or about
+**12,800 full prints**. That is the "12 million layers" figure - it is the
+endurance ceiling, not a target.
+
+The 3.3 ms is a different thing entirely. It is how long the chip physically
+takes to burn one byte, during which a normal `eeprom_write` call just sits and
+waits. A 14-byte record written that way would block for ~45 ms - the same
+mistake as the old blocking motion loop, and it would show up as a stutter in
+the steppers. So `persist::service()` writes at most one byte per pass and only
+when `eeprom_is_ready()`, and the record trickles out over the next few
+milliseconds of ordinary looping.
+
+Write spacing follows the machine owner's guidance: a record is worth writing
+once per layer, but not once per jog. `PERSIST_MIN_INTERVAL_MS` (10 s) means a
+burst of setup jogs coalesces into one record, while a print's per-layer moves
+are far enough apart to each get saved.
+
+**Better mechanism, later.** EEPROM is the wrong medium for this and only just
+adequate. When position tracking moves onto the Teensy control board it should
+land on FRAM (effectively unlimited endurance, byte-writable, no burn delay) or
+the SD card that is already there for job files. Worth designing in on the next
+board revision rather than porting the EEPROM scheme across.
 
 ### Teensy - ported and building, speaks no protocol yet
 

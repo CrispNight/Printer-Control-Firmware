@@ -142,8 +142,13 @@ bool isHoming(const axis_t &a)
  * — those cylinders have a limit switch at the bottom only, and driven far
  * enough up they push the weight out. An axis with no zero at all still gets
  * the switches, and nothing else. */
-int32_t clampTarget(const axis_t &a, int32_t target_um)
+int32_t clampTarget(const axis_t &a, int32_t target_um, uint8_t move_flags)
 {
+    /* Maintenance has to be able to run the pistons to the very top of the
+     * rail to get the build plate adapters out, and there is no switch there
+     * to stop at. Per move, never sticky, and main.cpp refuses it while the
+     * machine is doing something. */
+    if (move_flags & AXIS_MOVE_NO_BOUNDS) return target_um;
     if (BOUNDS_OVERRIDE) return target_um;
     if (!(a.flags & AXIS_FLAG_HOMED)) return target_um;
     if (target_um < 0) return 0;
@@ -398,7 +403,7 @@ bool moveTo(uint8_t axis, int32_t target_um, uint32_t speed_um_s,
 
     if (flags & AXIS_MOVE_RELATIVE)
         target_um += a.commanded_um;
-    target_um = clampTarget(a, target_um);
+    target_um = clampTarget(a, target_um, flags);
     a.commanded_um = target_um;
 
     applySpeed(a, speed_um_s ? speed_um_s : a.def_speed_um_s,
