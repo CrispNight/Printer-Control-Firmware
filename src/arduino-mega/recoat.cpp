@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "motion.h"
+#include "settings.h"
 
 namespace recoat {
 namespace {
@@ -258,7 +259,7 @@ uint8_t start(const recoat_cycle_t &req)
     c.feed_um         = req.feed_um;
     c.bed_um          = req.bed_um;
     c.clearance_um    = req.clearance_um;
-    c.settle_ms       = req.settle_ms ? req.settle_ms : RECOAT_SETTLE_DEFAULT_MS;
+    c.settle_ms       = settings::recoatSettle(req.settle_ms);
     c.wipe_speed_um_s = req.wipe_speed_mm_s ? (uint32_t)req.wipe_speed_mm_s * 1000UL : 0UL;
     c.rehome_due      = (cycles_since_rehome >= WIPE_REHOME_INTERVAL);
     c.rehomed         = false;

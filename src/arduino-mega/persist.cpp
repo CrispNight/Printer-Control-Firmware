@@ -30,8 +30,8 @@ const uint16_t SLOT_COUNT  = PERSIST_SLOT_COUNT;
  * rather than by a comment. */
 static_assert(sizeof(record_t) == 2 + 4 * PERSIST_AXIS_COUNT + 2 + 2,
               "record_t gained padding or a field; the CRC span assumes its layout");
-static_assert((uint32_t)PERSIST_SLOT_COUNT * sizeof(record_t) <= (uint32_t)E2END + 1,
-              "the position ring does not fit in this part's EEPROM");
+static_assert((uint32_t)PERSIST_SLOT_COUNT * sizeof(record_t) <= PERSIST_SETTINGS_BASE,
+              "the position ring has grown into the settings area");
 
 /* Wear levelling. Each write lands in the next slot, so a slot is only
  * rewritten once every SLOT_COUNT records. At roughly one record per layer
@@ -46,11 +46,27 @@ uint32_t still_since_ms;
 uint32_t last_write_ms;
 bool     ever_written;
 
-/* Byte-at-a-time write in progress. */
-bool     writing;
+/* Byte-at-a-time write in progress. Both the position record and the settings
+ * blob go through it, so neither can ever block the loop. */
+const uint8_t *write_src;
 uint16_t write_addr;
-uint8_t  write_index;
+uint16_t write_len;
+uint16_t write_index;
+bool     writing;
 uint16_t write_count;
+
+/* Settings, stored as two alternating copies at PERSIST_SETTINGS_BASE. */
+struct settings_blob_t {
+    mega_settings_t value;
+    uint16_t        seq;
+    uint16_t        crc;
+};
+static_assert(PERSIST_SETTINGS_BASE + 2 * sizeof(settings_blob_t) <= (uint32_t)E2END + 1,
+              "the settings copies do not fit in this part's EEPROM");
+
+settings_blob_t settings_live;
+uint8_t         settings_copy;     /* which of the two to write next */
+bool            settings_pending;
 
 uint16_t crcOf(const record_t &r)
 {
@@ -62,16 +78,34 @@ bool slotValid(const record_t &r)
     return r.crc == crcOf(r);
 }
 
+void queueWrite(uint16_t addr, const void *src, uint16_t len)
+{
+    write_addr  = addr;
+    write_src   = (const uint8_t *)src;
+    write_len   = len;
+    write_index = 0;
+    writing     = true;
+}
+
 void beginWrite()
 {
     live.seq = (uint16_t)(written.seq + 1);
     live.pad = 0;
     live.crc = crcOf(live);
 
-    write_addr  = (uint16_t)(next_slot * RECORD_SIZE);
-    write_index = 0;
-    writing     = true;
-    dirty       = false;
+    queueWrite((uint16_t)(next_slot * RECORD_SIZE), &live, RECORD_SIZE);
+    dirty = false;
+}
+
+uint16_t settingsCrc(const settings_blob_t &b)
+{
+    return crc16_ccitt((const uint8_t *)&b,
+                       (uint16_t)(sizeof(settings_blob_t) - sizeof(uint16_t)));
+}
+
+uint16_t settingsAddr(uint8_t copy)
+{
+    return (uint16_t)(PERSIST_SETTINGS_BASE + copy * sizeof(settings_blob_t));
 }
 
 uint8_t persistSlotOf(uint8_t axis)
@@ -96,6 +130,10 @@ void begin()
     still_since_ms = millis();
     last_write_ms = millis();
     ever_written = false;
+    write_src = 0;
+    settings_copy = 0;
+    settings_pending = false;
+    memset(&settings_live, 0, sizeof(settings_live));
 
     /* Find the newest good record. A blank or corrupt EEPROM simply yields
      * nothing, and every axis boots with no position. */
@@ -131,16 +169,28 @@ void service()
         /* update_ rather than write_: an unchanged byte costs nothing and
          * burns no endurance, and most of a record is unchanged. */
         eeprom_update_byte((uint8_t *)(uintptr_t)(write_addr + write_index),
-                           ((const uint8_t *)&live)[write_index]);
+                           write_src[write_index]);
         write_index++;
-        if (write_index >= RECORD_SIZE) {
-            writing = false;
+        if (write_index < write_len) return;
+
+        writing = false;
+        if (write_src == (const uint8_t *)&live) {
             written = live;
             next_slot = (uint16_t)((next_slot + 1) % SLOT_COUNT);
             write_count++;
             last_write_ms = millis();
             ever_written = true;
         }
+        return;
+    }
+
+    /* Settings go first: they are rare, small, and a user waiting on a
+     * settings page should not queue behind position bookkeeping. */
+    if (settings_pending) {
+        settings_pending = false;
+        queueWrite(settingsAddr(settings_copy), &settings_live,
+                   (uint16_t)sizeof(settings_blob_t));
+        settings_copy = (uint8_t)(settings_copy ^ 1);
         return;
     }
 
@@ -208,5 +258,37 @@ void forget(uint8_t axis)
 }
 
 uint16_t writes() { return write_count; }
+
+void loadSettings(mega_settings_t &out)
+{
+    settings_blob_t best;
+    bool found = false;
+
+    for (uint8_t copy = 0; copy < 2; copy++) {
+        settings_blob_t b;
+        eeprom_read_block(&b, (const void *)(uintptr_t)settingsAddr(copy),
+                          sizeof(settings_blob_t));
+        if (b.crc != settingsCrc(b)) continue;
+        if (!found || (int16_t)(b.seq - best.seq) > 0) {
+            best = b;
+            found = true;
+            /* Write over the older copy next, so the newer one is never the
+             * one at risk during an interrupted write. */
+            settings_copy = (uint8_t)(copy ^ 1);
+        }
+    }
+
+    if (!found) return;          /* caller keeps its compiled-in defaults */
+    settings_live = best;
+    out = best.value;
+}
+
+void saveSettings(const mega_settings_t &in)
+{
+    settings_live.value = in;
+    settings_live.seq   = (uint16_t)(settings_live.seq + 1);
+    settings_live.crc   = settingsCrc(settings_live);
+    settings_pending    = true;
+}
 
 }  // namespace persist

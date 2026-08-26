@@ -26,19 +26,24 @@ nothing still gets sane behaviour. A settings page is the natural home.
 | Purge target O2 | `purge_set_t.target_o2_ppm` | 3000 ppm (0.30 %) | depends on the alloy and how fussy the part is |
 | Purge stage 2 timeout | `purge_set_t.timeout_s` | 1800 s | depends on chamber volume and argon supply |
 | Purge minimum mixing | `purge_set_t.min_mix_s` | 60 s | per machine and per gas; the pockets it clears are what ruin a part |
-| Light settle, per mode | `light_set_t.settle_ms` | ambient 1500 ms, shadow 1000 ms | a property of the camera, not the machine |
+| Argon flow rate | stored only | 10 L/min | a property of the regulator; calibrate it |
+| Light settle, per mode | stored only | ambient 1500 ms, shadow 1000 ms | a property of the camera, not the machine |
 | Recoat settle | `recoat_cycle_t.settle_ms` | 2000 ms | reason for the value is no longer known; **measure before reducing** |
 | Recoat park mode | `recoat_cycle_t.park_mode` | overflow | a real surface-quality vs. time tradeoff, still unmeasured |
 | Recoat clearance | `recoat_cycle_t.clearance_um` | 0 | only meaningful with supply park |
 | Recoat passes | `recoat_cycle_t.passes` | 1 | |
 | Layer increments | `recoat_cycle_t.feed_um` / `bed_um` | — | per job, not per machine |
 
-**Known gap: there is no settings read-back.** The Mega holds all of the above
-but nothing can ask it what they currently are, and it reverts to defaults on
-reboot. Today the host knows only because it sent them. That is fine while one
-host owns the machine and wrong as soon as two do, or after an unexpected
-reset. A read-back path is a protocol design question that spans both boards
-and should be settled once, not twice.
+Read them with `MSG_SETTINGS_REQUEST`, write them with `MSG_SETTINGS_SET`. The
+node stores them in EEPROM, so they survive a reboot and a host that was not
+the one that set them can still find out what they are. Out-of-range values are
+refused rather than clamped, and a successful write is echoed back, so a
+settings page never has to assume.
+
+The table's "where" column is the per-command override. **Zero there means "use
+the stored setting"**, so a one-off run can differ without disturbing the page.
+
+Later this is relayed: the UI asks the Teensy, the Teensy asks the Mega.
 
 ### Indicators
 
@@ -101,9 +106,11 @@ that demands a clear for an open door will be cleared after every powder load.
 
 ### Long-running operations that need progress, not a spinner
 
-- **Purge — up to about forty minutes.** `state_report_t.substate` carries the
-  stage while `STATE_PURGING`: 1 displace, 2 mix, 3 verify. Showing oxygen
-  against the target over time is far more useful than a percentage.
+- **Purge — up to about forty minutes.** `MSG_PURGE_STATUS` arrives on every
+  stage change and every few seconds in between: stage, oxygen against the
+  target, elapsed time, argon used. Plot oxygen against the target over time;
+  a percentage would be meaningless here. `state_report_t.substate` carries
+  the same stage number while `STATE_PURGING`.
 - **Homing** — `STATE_HOMING`; three approach passes per axis, plus a travel
   measurement on the wiper.
 - **Recoat** — several seconds. No substate today; progress is visible as axis
@@ -127,16 +134,24 @@ that demands a clear for an open door will be cleared after every powder load.
 - **`FAN_MODE_MAPPED` and `FAN_MODE_CLOSEDLOOP` are refused.** No scan speed
   reaches the Mega and no flow sensor is fitted.
 
-### Values the machine measures and reports only as log text
+### Values worth trending, not just reading
 
-No protocol field exists for these yet. They are real numbers worth keeping,
-and a host that only parses structs will drop them.
-
-- **Argon consumed**, as solenoid-open seconds per purge. The old host kept a
-  running litre total from exactly this.
-- **Wiper travel**, measured against both switches on every home. A belt that
-  has slipped or a frame that has shifted shows up here first, so it is worth
+- **Argon consumed** — `purge_status_t.argon_ml`, per purge. Accumulate it per
+  job. It is an estimate from the regulator setting until a real flow meter
+  exists.
+- **Wiper travel** — measured against both switches on every home, reported as
+  a log line since no struct field exists for it. It was originally added to
+  check whether a different belt sprocket was giving the right distance, and it
+  is the first place a slipped belt or a shifted frame will show. Worth
   trending rather than reading once.
+
+### Still missing on this board
+
+- **Light mode** can be queried (send `MSG_LIGHT_SET` with no payload) but is
+  not published on change, so a second host will not see the first one switch
+  it.
+- **Recoat progress** has no step-level detail; it is visible only as axis
+  movement and the completion ACK.
 
 ---
 

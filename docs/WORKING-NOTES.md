@@ -965,18 +965,25 @@ then shut the valve and prove it holds - and is documented in `PROTOCOL.md`.
 
 Still open on the Mega, and none of it blocks a print:
 
-- **`FAN_MODE_MAPPED` has no owner.** It was specified from a verbal
-  description of a speed-to-fan map, but the PC never implemented one: it sends
+- **`FAN_MODE_MAPPED` is premature, not wrong.** It was specified from a verbal
+  description of a speed-to-fan map, and the PC never implemented one - it sends
   two fixed levels, `BLOWER_PURGE_SPEED` (PWM 50) and `BLOWER_PRINT_SPEED`
-  (PWM 94). Both are Mega constants now. Either the mode gets a real definition
-  or it should be retired from the protocol - it is refused today.
+  (PWM 94), both Mega constants now. But the idea is sound: faster scanning
+  throws more spatter and wants more flow. What is missing is only the input -
+  no node that owns a fan currently sees scan speed. It becomes implementable
+  the moment the Teensy tells the airflow node what speed it is marking at, so
+  it is kept and refused rather than retired. **No decision needed now**; it
+  resolves itself when the Teensy-to-airflow link exists.
 - **`MSG_RESET` is refused.** A watchdog reset is the only clean way to do it on
   an AVR, and the stock Mega2560 bootloader does not reliably clear `WDRF`, so
   the board can come up in a reset loop needing a manual reflash. Revisit only
   if the bootloader is confirmed watchdog-safe.
-- **The fan tach is not counted**, so `fan_status_t.rpm` is 0. The machine owner
-  considers the radiator fan likely to be removed entirely, so this is not
-  worth building.
+- **The fan tach is TO BE REMOVED**, not implemented. It is still physically
+  hooked up on pin 20 and is one of several tachometers, none of which is
+  needed; the radiator fan it belongs to is itself likely to be deleted, since
+  the build plate adapter is plastic and water cooling was never feasible.
+  `fan_status_t.rpm` reports 0 and should keep doing so. Flagged for removal at
+  the next hardware revision - do not build a pulse counter for it.
 - **Argon consumption** is measured (solenoid-open seconds) but there is no
   protocol field to report it in.
 

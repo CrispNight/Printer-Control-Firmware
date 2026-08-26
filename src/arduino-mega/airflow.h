@@ -39,17 +39,19 @@ uint8_t setPurge(const purge_set_t &req);
 bool    purging();
 uint8_t purgeStage();   /* purge_stage_t, for state reporting */
 
-enum purge_result_t {
-    PURGE_RESULT_NONE = 0,
-    PURGE_RESULT_PASSED,
-    PURGE_RESULT_FAILED,   /* O2 climbed back once the solenoid shut */
-};
+/* Fill in a progress snapshot. A purge can run for the better part of an hour,
+ * so "busy" is not a useful answer to a host. */
+void fillPurgeStatus(purge_status_t &out);
 
 /* Consume-once. A failed purge does NOT stop anything: the old sequence logged
  * it and carried on, and whether to print into a chamber that did not hold is
  * a policy decision for the job sequencer, not for the board that owns the
  * valve. It is reported so that decision can be made. */
-purge_result_t consumePurgeResult();
+uint8_t consumePurgeResult();   /* purge_result_t */
+
+/* True once per change of purge stage, so progress can be published on change
+ * as well as on a slow tick. */
+bool consumeStageChanged();
 
 /* Seconds the solenoid was open on the last purge. The PC used this to bill
  * argon consumption; there is no protocol field for it yet. */

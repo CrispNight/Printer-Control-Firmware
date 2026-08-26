@@ -5,6 +5,7 @@
 #include "config.h"
 #include "pins.h"
 #include "sensors.h"
+#include "settings.h"
 
 namespace airflow {
 namespace {
@@ -20,15 +21,15 @@ fan_t fans[2] = {
     {PIN_FAN_PWM,    FAN_MODE_OFF, 0},  /* FAN_RADIATOR */
 };
 
-/* Stages of the argon purge. See config.h for why the order is what it is. */
-enum purge_stage_t {
-    PURGE_IDLE = 0,
-    PURGE_DISPLACE,  /* solenoid open, blower OFF — argon displaces air */
-    PURGE_MIX,       /* solenoid open, blower on  — homogenise */
-    PURGE_VERIFY,    /* solenoid shut, blower on  — prove it holds */
-};
+/* Stage names come from protocol.h now, so a host and the board cannot drift
+ * apart on what stage 2 means. */
+const uint8_t PURGE_IDLE     = PURGE_STAGE_IDLE;
+const uint8_t PURGE_DISPLACE = PURGE_STAGE_DISPLACE;
+const uint8_t PURGE_MIX      = PURGE_STAGE_MIX;
+const uint8_t PURGE_VERIFY   = PURGE_STAGE_VERIFY;
 
 uint8_t  purge_stage;
+bool     stage_changed;
 bool     valve_open;
 uint16_t purge_target_ppm;
 uint16_t purge_timeout_s;
@@ -36,7 +37,7 @@ uint16_t purge_min_mix_s;
 uint32_t purge_start_ms;      /* of the whole purge, for argon accounting */
 uint32_t stage_start_ms;
 uint16_t purge_open_s;
-purge_result_t purge_result;
+uint8_t  purge_result;
 
 uint8_t dutyToPwm(uint16_t duty_pm)
 {
@@ -64,6 +65,7 @@ void setBlowerDuty(uint16_t duty_pm)
 
 void enterStage(uint8_t stage)
 {
+    if (stage != purge_stage) stage_changed = true;
     purge_stage = stage;
     stage_start_ms = millis();
 
@@ -115,8 +117,9 @@ void begin()
     pinMode(PIN_PURGE, OUTPUT);
     digitalWrite(PIN_PURGE, LOW);
 
-    // TODO: Tach input — PIN_FAN_TACH is wired but not yet read; fan_status_t
-    // reports rpm 0 until attachInterrupt() + a pulse counter land here.
+    // PIN_FAN_TACH is wired but deliberately not read — see pins.h. It is
+    // slated for removal, so fan_status_t reports rpm 0 and should keep doing
+    // so rather than growing a pulse counter.
 
     purge_stage = PURGE_IDLE;
     valve_open = false;
@@ -225,13 +228,14 @@ uint8_t setPurge(const purge_set_t &req)
     }
     if (purge_stage != PURGE_IDLE) return ACK_BUSY;
 
-    purge_target_ppm = req.target_o2_ppm ? req.target_o2_ppm : PURGE_TARGET_DEFAULT_PPM;
-    purge_timeout_s  = req.timeout_s ? req.timeout_s : PURGE_STAGE2_TIMEOUT_S;
+    purge_target_ppm = settings::purgeTarget(req.target_o2_ppm);
+    purge_timeout_s  = settings::purgeTimeout(req.timeout_s);
     /* Skipping the mix minimum is a deliberate testing action, never a
-     * default: the pockets it exists to clear are what ruin a part. */
+     * default: the pockets it exists to clear are what ruin a part. It cannot
+     * be reached by storing a zero — settings::set() refuses that. */
     purge_min_mix_s  = (req.flags & PURGE_FLAG_SKIP_MIN_MIX)
                            ? 0
-                           : (req.min_mix_s ? req.min_mix_s : PURGE_STAGE2_MIN_S);
+                           : settings::purgeMinMix(req.min_mix_s);
     purge_result     = PURGE_RESULT_NONE;
     purge_open_s     = 0;
     purge_start_ms   = millis();
@@ -243,14 +247,38 @@ bool purging() { return purge_stage != PURGE_IDLE; }
 
 uint8_t purgeStage() { return purge_stage; }
 
-purge_result_t consumePurgeResult()
+uint8_t consumePurgeResult()
 {
-    const purge_result_t r = purge_result;
+    const uint8_t r = purge_result;
     purge_result = PURGE_RESULT_NONE;
     return r;
 }
 
+bool consumeStageChanged()
+{
+    const bool c = stage_changed;
+    stage_changed = false;
+    return c;
+}
+
 uint16_t lastPurgeOpenSeconds() { return purge_open_s; }
+
+void fillPurgeStatus(purge_status_t &out)
+{
+    out.stage      = purge_stage;
+    out.result     = purge_result;
+    out.o2_ppm     = sensors::oxygenWorstPpm();
+    out.target_ppm = purge_target_ppm;
+    /* While a purge runs, how long it has been going; once it ends, how long
+     * the solenoid was open, which is what the argon estimate is based on. */
+    out.elapsed_s  = (purge_stage == PURGE_IDLE)
+                         ? purge_open_s
+                         : (uint16_t)((millis() - purge_start_ms) / 1000UL);
+    out.argon_ml   = settings::argonMl(
+        (purge_stage == PURGE_IDLE)
+            ? purge_open_s
+            : (uint16_t)((millis() - purge_start_ms) / 1000UL));
+}
 
 void allOff()
 {

@@ -40,6 +40,7 @@
 #include "recoat.h"
 #include "safety.h"
 #include "sensors.h"
+#include "settings.h"
 
 namespace {
 
@@ -67,6 +68,7 @@ uint32_t last_sensor_report_ms;
 uint32_t last_safety_report_ms;
 uint32_t last_axis_report_ms;
 uint16_t last_warn_mask;
+uint32_t last_purge_report_ms;
 uint16_t last_tripped_mask;
 uint16_t last_link_errors;
 
@@ -367,6 +369,34 @@ void onPacket(const packet_t &packet, void *)
         break;
     }
 
+    case MSG_SETTINGS_REQUEST:
+        link.sendStruct(packet.src, MSG_SETTINGS, settings::get(), FLAG_IS_RESPONSE);
+        break;
+
+    case MSG_SETTINGS_SET:
+        if (!payloadIs(packet, sizeof(mega_settings_t))) {
+            link.sendAck(packet, ACK_BAD_LENGTH);
+            break;
+        }
+        {
+            mega_settings_t req;
+            memcpy(&req, packet.payload, sizeof(req));
+            const uint8_t status = settings::set(req);
+            link.sendAck(packet, status);
+            /* Echo what is now stored, so a settings page never has to assume
+             * its write landed exactly as sent. */
+            if (status == ACK_OK)
+                link.sendStruct(packet.src, MSG_SETTINGS, settings::get());
+        }
+        break;
+
+    case MSG_PURGE_STATUS: {
+        purge_status_t st;
+        airflow::fillPurgeStatus(st);
+        link.sendStruct(packet.src, MSG_PURGE_STATUS, st, FLAG_IS_RESPONSE);
+        break;
+    }
+
     case MSG_RESET:
         /* Refused, with a reason. A watchdog reset is the only clean way to
          * do this on an AVR, and the stock Mega2560 bootloader does not
@@ -431,6 +461,14 @@ void onPacket(const packet_t &packet, void *)
         break;
 
     case MSG_LIGHT_SET:
+        if (packet.len == 0) {
+            /* Query: which lights are on right now. */
+            light_set_t st;
+            st.mode = lighting::mode();
+            st.reserved = 0;
+            link.sendStruct(packet.src, MSG_LIGHT_SET, st, FLAG_IS_RESPONSE);
+            break;
+        }
         if (!payloadIs(packet, sizeof(light_set_t))) {
             link.sendAck(packet, ACK_BAD_LENGTH);
             break;
@@ -493,21 +531,19 @@ void serviceFaults()
      * print into a chamber that failed verification is the job sequencer's
      * call, not the board's. STATE_READY already refuses to appear while the
      * chamber is above the threshold, which is the gate that matters. */
-    const airflow::purge_result_t purge = airflow::consumePurgeResult();
-    if (purge == airflow::PURGE_RESULT_FAILED) {
+    const uint8_t purge = airflow::consumePurgeResult();
+    if (purge == PURGE_RESULT_FAILED) {
         sendLiveFault(FAULT_OXYGEN_HIGH, sensors::oxygenWorstPpm());
         link.sendLog(NODE_BROADCAST, LOG_WARN, "purge did not hold");
-    } else if (purge == airflow::PURGE_RESULT_PASSED) {
+    } else if (purge == PURGE_RESULT_PASSED) {
         link.sendLog(NODE_BROADCAST, LOG_INFO, "purge verified");
     }
-    if (purge != airflow::PURGE_RESULT_NONE) {
-        /* Argon is billed by solenoid-open time. There is no protocol field
-         * for it, so the number goes in the log rather than being thrown
-         * away — the PC used to keep a running total from exactly this. */
-        char line[32];
-        snprintf(line, sizeof(line), "argon open %us",
-                 (unsigned)airflow::lastPurgeOpenSeconds());
-        link.sendLog(NODE_BROADCAST, LOG_INFO, line);
+    if (purge != PURGE_RESULT_NONE) {
+        /* One last status, carrying the final argon figure — a job sequencer
+         * accumulates per-print consumption from these. */
+        purge_status_t st;
+        airflow::fillPurgeStatus(st);
+        link.sendStruct(NODE_BROADCAST, MSG_PURGE_STATUS, st);
     }
 
     const uint8_t measured = motion::consumeTravelMeasured();
@@ -608,6 +644,18 @@ void serviceReports()
     }
 
     if (sensors::consumeOverrideChanged()) sendOverride(NODE_BROADCAST);
+
+    /* Purge progress: on every stage change, and on a slow tick in between.
+     * Stage 1 alone is eight minutes, so a host needs to see oxygen moving
+     * rather than a spinner — but it does not need it ten times a second. */
+    if (airflow::purging() &&
+        (airflow::consumeStageChanged() ||
+         now - last_purge_report_ms >= PURGE_REPORT_INTERVAL_MS)) {
+        last_purge_report_ms = now;
+        purge_status_t st;
+        airflow::fillPurgeStatus(st);
+        link.sendStruct(NODE_BROADCAST, MSG_PURGE_STATUS, st);
+    }
 }
 
 }  // namespace
@@ -619,7 +667,8 @@ void setup()
     /* Outputs are configured by the modules that own them, and every one of
      * them comes up in its safe state: drivers not stepping, solenoid closed,
      * fans at zero, lights off. */
-    persist::begin();   /* before motion::begin(), which restores from it */
+    persist::begin();    /* before motion::begin(), which restores from it */
+    settings::begin();   /* and before anything that reads a setting */
     motion::begin();
     sensors::begin();
     safety::begin();
@@ -631,6 +680,7 @@ void setup()
 
     const uint32_t now = millis();
     last_heartbeat_ms = last_sensor_report_ms = last_safety_report_ms = last_axis_report_ms = now;
+    last_purge_report_ms = now;
     last_warn_mask = 0;
 
     last_tripped_mask = safety::trippedMask();

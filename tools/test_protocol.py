@@ -119,8 +119,22 @@ def test_new_messages():
     check(p.TimingOffset.unpack(off.pack()).laser_lead_samples == -37,
           "TimingOffset carries a signed lead")
 
-    light = p.LightSet(mode=p.LightMode.SHADOW, settle_ms=1500)
+    light = p.LightSet(mode=p.LightMode.SHADOW)
     check(p.LightSet.unpack(light.pack()) == light, "LightSet round-trips")
+
+    st = p.MegaSettings(purge_target_o2_ppm=3000, purge_timeout_s=1800,
+                        purge_min_mix_s=60, light_settle_ms=(0, 1500, 1000),
+                        recoat_settle_ms=2000, argon_flow_ml_min=10000)
+    check(p.MegaSettings.unpack(st.pack()) == st, "MegaSettings round-trips")
+    check(p.MegaSettings.unpack(st.pack()).light_settle_ms[p.LightMode.SHADOW] == 1000,
+          "light settle is indexed by light_mode_t")
+
+    ps = p.PurgeStatus(stage=p.PurgeStage.MIX, result=p.PurgeResult.NONE,
+                       o2_ppm=4200, target_ppm=3000, elapsed_s=900,
+                       argon_ml=150000)
+    check(p.PurgeStatus.unpack(ps.pack()) == ps, "PurgeStatus round-trips")
+    check(p.PurgeStatus.unpack(ps.pack()).argon_ml == 150000,
+          "argon_ml is wide enough for a long purge (150 L here)")
 
     ov = p.SensorOverride(override_mask=0x0001, oxygen_true_ppm=(210000 & 0xFFFF, 0),
                           temp_true_c_x10=(251, 0, 0, 0, 0, 0))
@@ -155,7 +169,7 @@ def test_invariants():
           "NODE_AIRFLOW still points at the Mega (update PROTOCOL.md when it moves)")
     check(p.PACKET_MAX_LEN == p.PACKET_HEADER_LEN + p.PACKET_MAX_PAYLOAD + p.PACKET_CRC_LEN,
           "PACKET_MAX_LEN agrees with its parts")
-    check(p.PROTOCOL_VERSION == 4, "PROTOCOL_VERSION is 4")
+    check(p.PROTOCOL_VERSION == 5, "PROTOCOL_VERSION is 5")
     check(p.AXIS_FLAG_POS_RESTORED == 0x20,
           "AXIS_FLAG_POS_RESTORED does not collide with the other axis flags")
     used = (p.AXIS_FLAG_HOMED | p.AXIS_FLAG_MOVING | p.AXIS_FLAG_AT_LIMIT |

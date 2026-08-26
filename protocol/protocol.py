@@ -12,12 +12,12 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import ClassVar, Tuple
 
-SOURCE_HASH = "8344881b6f19ecbb"  # sha256 of the generated region of protocol.h
+SOURCE_HASH = "feab1f6e8569cdb2"  # sha256 of the generated region of protocol.h
 
 
 # --- Constants -----------------------------------------------------------
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 PACKET_SOF0 = 0xA5
 PACKET_SOF1 = 0x5A
 PACKET_HEADER_LEN = 9
@@ -79,6 +79,9 @@ class MsgId(IntEnum):
     LOG = 0x05
     HEARTBEAT = 0x06
     RESET = 0x07
+    SETTINGS_REQUEST = 0x08
+    SETTINGS = 0x09
+    SETTINGS_SET = 0x0A
     STATE_REQUEST = 0x10
     STATE = 0x11
     JOB_START = 0x12
@@ -104,6 +107,7 @@ class MsgId(IntEnum):
     PURGE_SET = 0x41
     LIGHT_SET = 0x42
     SENSOR_OVERRIDE = 0x43
+    PURGE_STATUS = 0x44
     LASER_ARM = 0x50
     LASER_PARAMS = 0x51
     MARK_ABORT = 0x53
@@ -211,6 +215,23 @@ class LaserState(IntEnum):
     ARMED = 0x01
     MARKING = 0x02
     FAULT = 0x03
+
+
+class PurgeStage(IntEnum):
+    """C `purge_stage_t`."""
+
+    IDLE = 0x00
+    DISPLACE = 0x01
+    MIX = 0x02
+    VERIFY = 0x03
+
+
+class PurgeResult(IntEnum):
+    """C `purge_result_t`."""
+
+    NONE = 0x00
+    PASSED = 0x01
+    FAILED = 0x02
 
 
 class FanMode(IntEnum):
@@ -1302,25 +1323,23 @@ class FanStatus:
         )
 
 
-_S_LIGHTSET = struct.Struct("<BBH")
+_S_LIGHTSET = struct.Struct("<BB")
 
 
 @dataclass
 class LightSet:
-    """C `light_set_t` — 4 bytes on the wire."""
+    """C `light_set_t` — 2 bytes on the wire."""
 
     mode: int = 0
     reserved: int = 0
-    settle_ms: int = 0
 
-    FORMAT: ClassVar[str] = "<BBH"
-    SIZE: ClassVar[int] = 4
+    FORMAT: ClassVar[str] = "<BB"
+    SIZE: ClassVar[int] = 2
 
     def pack(self) -> bytes:
         return _S_LIGHTSET.pack(
             self.mode,
             self.reserved,
-            self.settle_ms,
         )
 
     @classmethod
@@ -1329,7 +1348,6 @@ class LightSet:
         return cls(
             mode=v[0],
             reserved=v[1],
-            settle_ms=v[2],
         )
 
 
@@ -1361,6 +1379,86 @@ class SensorOverride:
             override_mask=v[0],
             oxygen_true_ppm=tuple(v[1:3]),
             temp_true_c_x10=tuple(v[3:9]),
+        )
+
+
+_S_PURGESTATUS = struct.Struct("<BBHHHI")
+
+
+@dataclass
+class PurgeStatus:
+    """C `purge_status_t` — 12 bytes on the wire."""
+
+    stage: int = 0
+    result: int = 0
+    o2_ppm: int = 0
+    target_ppm: int = 0
+    elapsed_s: int = 0
+    argon_ml: int = 0
+
+    FORMAT: ClassVar[str] = "<BBHHHI"
+    SIZE: ClassVar[int] = 12
+
+    def pack(self) -> bytes:
+        return _S_PURGESTATUS.pack(
+            self.stage,
+            self.result,
+            self.o2_ppm,
+            self.target_ppm,
+            self.elapsed_s,
+            self.argon_ml,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "PurgeStatus":
+        v = _S_PURGESTATUS.unpack(data[: cls.SIZE])
+        return cls(
+            stage=v[0],
+            result=v[1],
+            o2_ppm=v[2],
+            target_ppm=v[3],
+            elapsed_s=v[4],
+            argon_ml=v[5],
+        )
+
+
+_S_MEGASETTINGS = struct.Struct("<HHH3HHH")
+
+
+@dataclass
+class MegaSettings:
+    """C `mega_settings_t` — 16 bytes on the wire."""
+
+    purge_target_o2_ppm: int = 0
+    purge_timeout_s: int = 0
+    purge_min_mix_s: int = 0
+    light_settle_ms: Tuple[int, ...] = field(default_factory=tuple)
+    recoat_settle_ms: int = 0
+    argon_flow_ml_min: int = 0
+
+    FORMAT: ClassVar[str] = "<HHH3HHH"
+    SIZE: ClassVar[int] = 16
+
+    def pack(self) -> bytes:
+        return _S_MEGASETTINGS.pack(
+            self.purge_target_o2_ppm,
+            self.purge_timeout_s,
+            self.purge_min_mix_s,
+            *tuple(self.light_settle_ms)[:3],
+            self.recoat_settle_ms,
+            self.argon_flow_ml_min,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "MegaSettings":
+        v = _S_MEGASETTINGS.unpack(data[: cls.SIZE])
+        return cls(
+            purge_target_o2_ppm=v[0],
+            purge_timeout_s=v[1],
+            purge_min_mix_s=v[2],
+            light_settle_ms=tuple(v[3:6]),
+            recoat_settle_ms=v[6],
+            argon_flow_ml_min=v[7],
         )
 
 

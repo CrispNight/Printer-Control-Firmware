@@ -1,6 +1,6 @@
 # Moiren SLM — machine communication protocol
 
-**Version 4.** `protocol/protocol.h` is the single source of truth. This
+**Version 5.** `protocol/protocol.h` is the single source of truth. This
 document explains it; it does not define it. If the two disagree, the header
 wins and this file is the bug.
 
@@ -172,6 +172,30 @@ Ids are grouped so the range identifies the concern.
 | `0x05` | `MSG_LOG` | `sys_log_t` | diagnostics, forwarded to the PC when present |
 | `0x06` | `MSG_HEARTBEAT` | `sys_heartbeat_t` | periodic; silence is `FAULT_COMMS_TIMEOUT` |
 | `0x07` | `MSG_RESET` | — | soft reset |
+| `0x08` | `MSG_SETTINGS_REQUEST` | — | ask a node for its settings |
+| `0x09` | `MSG_SETTINGS` | `<node>_settings_t` | the reply's SRC says whose |
+| `0x0A` | `MSG_SETTINGS_SET` | `<node>_settings_t` | stored, ACKed, then echoed |
+
+#### Settings live on the node
+
+Values that are dialled in once per machine — purge target, mixing floor,
+camera settle times, argon flow rate — are held by the node that uses them, in
+non-volatile memory, and a host reads them back with `MSG_SETTINGS_REQUEST`.
+
+This is not bookkeeping. A host that keeps them itself can only display what it
+last sent, which is wrong after any reset, wrong for a host that was not the
+one that set them, and wrong the moment a second host exists. **A settings page
+showing the wrong numbers is worse than one showing none, because it looks
+right.**
+
+Out-of-range values are refused (`ACK_BAD_PARAM`), not clamped, so a settings
+page finds out rather than silently getting something else. A successful set is
+followed by an unsolicited `MSG_SETTINGS`, so a page never has to assume its
+write landed as sent.
+
+Where a command carries the same quantity — `purge_set_t.target_o2_ppm`,
+`recoat_cycle_t.settle_ms` — **zero means "use the stored setting"**, so a
+one-off run can override without disturbing what the settings page holds.
 
 ### `0x1X` — machine state, job control, job upload
 
@@ -352,6 +376,7 @@ recoater.
 | `0x41` | `MSG_PURGE_SET` | `purge_set_t` |
 | `0x42` | `MSG_LIGHT_SET` | `light_set_t` |
 | `0x43` | `MSG_SENSOR_OVERRIDE` | `sensor_override_t` |
+| `0x44` | `MSG_PURGE_STATUS` | `purge_status_t` |
 
 `sensor_report_t.valid_mask` marks which readings are trustworthy: bits 0–1 for
 `oxygen_ppm[0..1]`, bits 8–13 for `temp_c_x10[0..5]`. Unfitted or known-bad
@@ -399,6 +424,16 @@ A failed verification is reported (`FAULT_OXYGEN_HIGH` plus a log line) but
 stops nothing: whether to print into a chamber that did not hold is the job
 sequencer's decision, not the valve owner's. The real gate is that `STATE_READY`
 does not appear while oxygen is above the threshold.
+
+`MSG_PURGE_STATUS` is published on every stage change and every few seconds in
+between, and once more when the purge ends. It carries the stage, oxygen
+against the target, elapsed time and the argon used. Stage 1 alone is eight
+minutes, so a host needs to see oxygen moving rather than a spinner.
+
+`argon_ml` is solenoid-open time multiplied by the configured flow rate — an
+estimate from a regulator setting, not a measurement, which is what a real flow
+meter would eventually replace. A job sequencer accumulates per-print
+consumption from these.
 
 While a purge runs it **owns the chamber blower** — the stages switch it off and
 on for a physical reason — so `MSG_FAN_SET` on `FAN_CHAMBER_BLOWER` is answered

@@ -223,6 +223,12 @@ static const uint16_t PURGE_HOLD_MARGIN_PPM = 2000;
 static const uint16_t BLOWER_PURGE_DUTY_PM = 196;  /* PWM 50/255 */
 static const uint16_t BLOWER_PRINT_DUTY_PM = 369;  /* PWM 94/255 — anemometer-verified */
 
+/* Argon flow with the solenoid open, for the consumption estimate. This is a
+ * property of the regulator, not the machine, so it is a stored setting the
+ * user can calibrate — this is only the starting value. The old PC controller
+ * used 10 L/min with the same caveat. */
+static const uint16_t ARGON_FLOW_ML_MIN_DEFAULT = 10000;  /* 10 L/min */
+
 /* --- Position persistence ------------------------------------------------ */
 
 /* Only the closed-loop pistons are persisted. The recoater is open loop, moves
@@ -230,6 +236,11 @@ static const uint16_t BLOWER_PRINT_DUTY_PM = 369;  /* PWM 94/255 — anemometer-
  * power cycle instead — which the recoat cycle already requires. Keeping it
  * out of the store also keeps the write rate to roughly one per layer. */
 static const uint8_t PERSIST_AXIS_COUNT = 2;   /* AXIS_FEED, AXIS_BED */
+
+/* Settings live above the position ring, in two alternating copies so a power
+ * cut during a write cannot destroy the only good one. They change so rarely
+ * that endurance is a non-issue. */
+static const uint16_t PERSIST_SETTINGS_BASE = 2048;
 
 /* Ring of slots for wear levelling. 128 slots x 14 bytes is 1.75 KB of the
  * Mega's 4 KB EEPROM, and means any one slot is rewritten only once every 128
@@ -264,5 +275,8 @@ static const uint16_t HEARTBEAT_INTERVAL_MS   = 500;
 static const uint16_t SENSOR_REPORT_INTERVAL_MS = 1000;
 static const uint16_t SAFETY_REPORT_INTERVAL_MS = 1000;
 static const uint16_t AXIS_REPORT_INTERVAL_MS   = 100;  /* while an axis is moving */
+/* A purge runs for tens of minutes and oxygen moves slowly, so progress every
+ * few seconds is plenty; stage changes are published immediately regardless. */
+static const uint16_t PURGE_REPORT_INTERVAL_MS  = 5000;
 
 #endif /* MEGA_CONFIG_H */

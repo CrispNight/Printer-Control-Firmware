@@ -69,8 +69,10 @@ static const uint8_t PIN_BLOWER_PWM = 44; // PWM output to blower motor controll
 static const uint8_t PIN_PURGE      = 48; // digital output — argon solenoid valve
 static const uint8_t PIN_FAN_PWM    = 46; // PWM output to radiator fan controller
 
-// TODO: Tach input — pin 20 wired to radiator fan tach signal (open-collector, 10kΩ pull-up to 5V).
-// INT3 (digitalPinToInterrupt(20)), 2 pulses/rev. Not yet implemented — add attachInterrupt() + pulse counter when RPM feedback is needed.
+// Tach input — pin 20 wired to radiator fan tach signal (open-collector, 10kΩ pull-up to 5V).
+// INT3 (digitalPinToInterrupt(20)), 2 pulses/rev. TO BE REMOVED, not implemented: it is one of
+// several tachometers, none of them needed, and the radiator fan itself is likely to be deleted —
+// the build plate adapter is plastic, so water cooling was never feasible. Do not build a counter.
 static const uint8_t PIN_FAN_TACH = 20;
 
 /* --- Chamber lighting ---------------------------------------------------- */

@@ -22,12 +22,11 @@ namespace lighting {
 
 void begin();
 
-/* Returns an ack_status_t. A settle_ms of 0 keeps the configured default for
- * that mode rather than meaning "no wait". */
+/* Returns an ack_status_t. How long to wait before a capture is a stored
+ * setting (mega_settings_t.light_settle_ms), not a parameter here. */
 uint8_t set(const light_set_t &req);
 
-uint8_t  mode();
-uint16_t settleMs(uint8_t mode);
+uint8_t mode();
 
 void off();
 

@@ -32,6 +32,8 @@
 
 #include <stdint.h>
 
+#include "protocol.h"
+
 namespace persist {
 
 /* Read the newest valid record. Call before motion::begin(). */
@@ -55,9 +57,19 @@ void note(uint8_t axis, int32_t position_um, bool referenced);
  * homed and the home failed). */
 void forget(uint8_t axis);
 
-/* Diagnostics: how many records have been written this power cycle, and which
- * slot the ring is on. */
+/* Diagnostics: how many records have been written this power cycle. */
 uint16_t writes();
+
+/* Machine settings, in two alternating copies so a power cut mid-write cannot
+ * destroy the only good one. Settings change so rarely that endurance does not
+ * come into it, and they are small enough that the write is not worth
+ * trickling — but it still goes through the same one-byte-per-call path so no
+ * caller ever eats a 40 ms stall.
+ *
+ * loadSettings() leaves `out` untouched if nothing valid is stored, so the
+ * caller's compiled-in defaults survive. */
+void loadSettings(mega_settings_t &out);
+void saveSettings(const mega_settings_t &in);
 
 }  // namespace persist
 

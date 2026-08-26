@@ -37,7 +37,7 @@ extern "C" {
 
 /* Bump on ANY change to packet layout, message ids, or payload structs.
  * Nodes refuse to talk to a peer reporting a different major version. */
-#define PROTOCOL_VERSION 4
+#define PROTOCOL_VERSION 5
 
 /* --- Packet framing ------------------------------------------------------ */
 
@@ -81,6 +81,16 @@ typedef enum {
     MSG_HEARTBEAT       = 0x06,  /* sys_heartbeat_t — periodic liveness */
     MSG_RESET           = 0x07,  /* no payload      — soft reset the node */
 
+    /* Settings a node holds and a settings page edits. The node stores them in
+     * non-volatile memory, so they survive a reboot and a host that was not
+     * the one that set them can still find out what they are. Without this a
+     * UI can only show what it last sent, which is wrong after any reset and
+     * wrong the moment a second host exists.
+     * The reply's SRC says which node's settings struct the payload is. */
+    MSG_SETTINGS_REQUEST = 0x08, /* no payload */
+    MSG_SETTINGS         = 0x09, /* <node>_settings_t */
+    MSG_SETTINGS_SET     = 0x0A, /* <node>_settings_t — stored, then ACKed */
+
     /* 0x10-0x1F  machine state and job control */
     MSG_STATE_REQUEST   = 0x10,  /* no payload */
     MSG_STATE           = 0x11,  /* state_report_t */
@@ -118,6 +128,9 @@ typedef enum {
     MSG_LIGHT_SET       = 0x42,  /* light_set_t — chamber lighting for the camera */
     MSG_SENSOR_OVERRIDE = 0x43,  /* sensor_override_t — sent on connect and on
                                   * change only, never on the periodic report */
+    MSG_PURGE_STATUS    = 0x44,  /* purge_status_t — progress through a purge,
+                                  * which can run for the better part of an
+                                  * hour, plus the argon it has used */
 
     /* 0x50-0x5F  laser and galvo (Teensy) */
     MSG_LASER_ARM       = 0x50,  /* laser_arm_t */
@@ -326,11 +339,34 @@ typedef enum {
 #define FIELD_SCALE_MIN_MCPMM  218453UL  /* 65536/300 -> 300 mm field */
 #define FIELD_SCALE_MAX_MCPMM 1986061UL  /* 65536/33  ->  33 mm field */
 
+/* --- Purge --------------------------------------------------------------- */
+
+/* Stage order is physical, not arbitrary — see PROTOCOL.md. */
+typedef enum {
+    PURGE_STAGE_IDLE     = 0x00,
+    PURGE_STAGE_DISPLACE = 0x01,  /* solenoid open, blower OFF */
+    PURGE_STAGE_MIX      = 0x02,  /* solenoid open, blower on */
+    PURGE_STAGE_VERIFY   = 0x03,  /* solenoid shut, blower on */
+} purge_stage_t;
+
+typedef enum {
+    PURGE_RESULT_NONE   = 0x00,  /* nothing has concluded */
+    PURGE_RESULT_PASSED = 0x01,
+    PURGE_RESULT_FAILED = 0x02,  /* O2 climbed back once the solenoid shut */
+} purge_result_t;
+
 /* fan_set_t.mode */
 typedef enum {
     FAN_MODE_OFF       = 0x00,
     FAN_MODE_MANUAL    = 0x01,  /* hold duty_pm exactly */
-    FAN_MODE_MAPPED    = 0x02,  /* map from scan speed — what the Mega does today */
+    FAN_MODE_MAPPED    = 0x02,  /* duty follows scan speed. NOT IMPLEMENTED
+                                 * anywhere: faster scanning throws more
+                                 * spatter and wants more flow, so the idea is
+                                 * sound, but no node that owns a fan currently
+                                 * sees scan speed. It becomes implementable
+                                 * once the Teensy tells the airflow node what
+                                 * speed it is marking at. Refused until then,
+                                 * never silently accepted. */
     FAN_MODE_CLOSEDLOOP= 0x03,  /* hold target_flow_cm_s; needs a flow sensor */
 } fan_mode_t;
 
@@ -645,13 +681,19 @@ typedef struct {
 } fan_status_t;
 
 /* MSG_LIGHT_SET — chamber lighting.
- * settle_ms is how long a caller should wait before capturing: the webcam has
- * a physical lens, and autofocus, white balance and exposure all need time to
- * adapt. 0 means use the node's configured default. */
+ *
+ * Sent with no payload it is a query, and the node answers with the mode
+ * currently selected. That is the same convention MSG_SENSOR_REPORT,
+ * MSG_AXIS_STATUS and MSG_FAN_STATUS use.
+ *
+ * How long to wait after switching before a capture is worth taking is NOT
+ * here: it is a property of the camera, it is dialled in once, and it belongs
+ * in mega_settings_t.light_settle_ms where it can be read back. Carrying it on
+ * every switch would have been a value the node had to either ignore or
+ * silently adopt, and neither is honest. */
 typedef struct {
-    uint8_t  mode;       /* light_mode_t */
-    uint8_t  reserved;
-    uint16_t settle_ms;
+    uint8_t mode;      /* light_mode_t */
+    uint8_t reserved;
 } light_set_t;
 
 /* MSG_SENSOR_OVERRIDE — which channels are being substituted, and what the
@@ -670,6 +712,39 @@ typedef struct {
     uint16_t oxygen_true_ppm[2]; /* what the sensor actually reads */
     int16_t  temp_true_c_x10[6];
 } sensor_override_t;
+
+/* MSG_PURGE_STATUS — published while a purge runs and once when it ends.
+ * A purge can take the better part of an hour, so "busy" is not a useful
+ * answer; oxygen against the target over time is. */
+typedef struct {
+    uint8_t  stage;       /* purge_stage_t */
+    uint8_t  result;      /* purge_result_t — meaningful once stage is IDLE */
+    uint16_t o2_ppm;      /* worst of the oxygen channels */
+    uint16_t target_ppm;
+    uint16_t elapsed_s;   /* since the purge started */
+    uint32_t argon_ml;    /* solenoid-open time x the configured flow rate.
+                           * An estimate from a regulator setting, not a
+                           * measurement — a real flow meter replaces it. */
+} purge_status_t;
+
+/* MSG_SETTINGS / MSG_SETTINGS_SET, for NODE_ARDUINO_MEGA.
+ *
+ * Everything here is dialled in once per machine and then rarely touched, and
+ * every one of them is something the firmware cannot know for itself: they
+ * depend on the gas, the regulator, the camera and the powder. The node keeps
+ * them in non-volatile memory.
+ *
+ * A zero in the equivalent field of a command (purge_set_t, recoat_cycle_t,
+ * light_set_t) means "use the stored setting", so a one-off run can still
+ * override without disturbing what the settings page holds. */
+typedef struct {
+    uint16_t purge_target_o2_ppm;  /* stage 2 aim */
+    uint16_t purge_timeout_s;      /* bounds stage 2 */
+    uint16_t purge_min_mix_s;      /* shortest stage 2 the O2 reading may end */
+    uint16_t light_settle_ms[3];   /* indexed by light_mode_t */
+    uint16_t recoat_settle_ms;     /* after the pistons, before the sweep */
+    uint16_t argon_flow_ml_min;    /* regulator dependent; calibrate per machine */
+} mega_settings_t;
 
 /* MSG_TIMING_OFFSET — systematic lead/lag between the laser power stream and
  * the galvo position stream, in galvo samples. Signed: positive emits power
