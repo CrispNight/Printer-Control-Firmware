@@ -581,8 +581,18 @@ against `identity.cor` - the arithmetic closes exactly at 68,128 bytes.
 | Offset | Size | Contents |
 |---|---|---|
 | `0x000` | 22 | `LMC1COR_1.0` in UTF-16LE |
-| `0x016` | 506 | header - **scale factor at double index 43** |
+| `0x016` | 2 | unknown, skipped by both readers |
+| `0x018` | 504 | 63 doubles - **scale at index 43, i.e. offset `0x170`** |
 | `0x210` | 67,600 | 65 x 65 points x 2 doubles (dx, dy) |
+
+**Corrected 2026-08-26.** An earlier version of this table said the header was
+506 bytes from `0x016` with the scale at index 43 of *that*, which puts it at
+`0x176` - six bytes wrong. `get_scale_from_correction_file()` reads the 22-byte
+label, then **two unknown bytes**, and only then 63 doubles. Reading at `0x176`
+returns 0.0 and makes the neighbouring double come out as a denormal
+(`8.087e-320`), which is the tell: a denormal where a scale should be means the
+read is misaligned, not that the field is empty. Verified against all four
+files on disk; at `0x170` every one reads exactly 1.0.
 
 An older int variant also exists: 14-byte header, 4-byte signed ints.
 
