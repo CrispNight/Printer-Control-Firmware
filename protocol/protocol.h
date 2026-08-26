@@ -166,9 +166,12 @@ typedef enum {
 } axis_id_t;
 
 /* axis_move_t.flags bits.
- * APPROACH_NEG forces the axis to reach its target from below, overshooting
- * and returning. The mechanics have real backlash, so the bed always descends
- * into position during a recoat. */
+ * The flag names the direction of the OVERSHOOT, not of the final approach.
+ * APPROACH_NEG drives past the target on the low side and comes back up, so
+ * the axis always arrives travelling positive and the backlash is taken up the
+ * same way every time. That is what the bed does on every recoat.
+ * The overshoot is skipped when the move already ends travelling the right
+ * way, since it would then take up the backlash by itself. */
 #define AXIS_MOVE_RELATIVE     0x01
 #define AXIS_MOVE_APPROACH_NEG 0x02
 #define AXIS_MOVE_APPROACH_POS 0x04

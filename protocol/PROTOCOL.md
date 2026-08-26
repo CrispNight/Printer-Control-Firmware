@@ -228,7 +228,24 @@ host does not. This is the difference that makes PC-free operation possible.
 
 `axis_move_t.flags` can force a direction of approach
 (`AXIS_MOVE_APPROACH_NEG` / `_POS`). The mechanics have real backlash, so the
-bed always descends into position during a recoat, overshooting and returning.
+bed always arrives at a layer height the same way: `APPROACH_NEG` overshoots
+past the target on the low side and comes back up, taking the slack out in a
+repeatable direction. The flag names the **overshoot**, not the final approach.
+The overshoot is skipped when the move already ends travelling the right way.
+
+**Motion is acknowledged on completion.** `MSG_AXIS_HOME`, `MSG_AXIS_MOVE` and
+`MSG_RECOAT_CYCLE` are answered with `MSG_ACK` when the work *finishes*, not
+when it is accepted — that is the answer a caller actually needs, and it is
+what the old firmware's `DONE|TASK=...` line meant. A command that is rejected
+outright (`ACK_BUSY`, `ACK_BAD_PARAM`, `ACK_BAD_STATE`) is answered
+immediately; a move that is cut short by a limit switch is answered
+`ACK_REFUSED` and followed by `MSG_FAULT`. Every other message acks straight
+away.
+
+Relative moves accumulate in **exact micrometres** on the Mega, not through the
+reported position. A 30 µm layer on the bed is 1.2 steps; rounding the
+remainder away each layer would cost 5 µm a layer, or 5 mm over a
+thousand-layer print.
 
 #### The recoat sequence
 
@@ -253,6 +270,20 @@ clears the return traverse, so powder is spread only on the forward pass.
 
 `PARK_SUPPLY` spreads on the forward pass and must then return over freshly
 spread powder, which costs an extra drop-and-raise — hence `clearance_um`.
+
+`feed_um` and `bed_um` are **increments for this layer**, not absolute targets:
+the piston rise and the platform drop. The Mega adds them to the position it
+already holds. The old machine had the host compute absolute targets from
+positions it kept itself, which is exactly why it could not run unattended.
+
+The recoater is the only open-loop axis, so it is the only one that drifts, and
+it is re-homed periodically. Where that falls in the cycle depends on the park
+mode, and it is not simply "at the end": with `PARK_OVERFLOW` the blade
+finishes above a layer it has just spread, so homing there would drag it back
+across fresh powder. The re-home **replaces the return traverse** instead,
+where the blade is crossing the lowered, unspread bed anyway and the trip is
+very nearly free. With `PARK_SUPPLY` the blade already ends beside its switch,
+so the re-home goes at the end.
 
 `settle_ms` pauses after the pistons move, before the sweep. The old firmware
 used 2000 ms; **the reason is no longer remembered, so measure before

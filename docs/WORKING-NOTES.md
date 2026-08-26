@@ -28,10 +28,10 @@ notes:
 
 Read this table first. The detail is below; each heading carries its state.
 
-**Where things stand:** protocol version 2 landed in `3abc782`. Everything
-decided in this document is now expressed in `protocol.h` and `PROTOCOL.md`.
-Almost none of it is *implemented in firmware* yet - that is the whole of the
-remaining work, and it is collected in section 18.
+**Where things stand:** protocol version 2 landed in `3abc782` and everything
+decided in this document is expressed in `protocol.h` and `PROTOCOL.md`. The
+**Arduino Mega is implemented**; the Teensy speaks no protocol yet and the
+ESP32 has no hardware. The remaining work is collected in section 18.
 
 | State | Meaning |
 |---|---|
@@ -57,11 +57,11 @@ remaining work, and it is collected in section 18.
 | 11 | Two-head expansion, v0.2 pin checklist | `[ELSEWHERE]` |
 | 12 | PSRAM is for job data | `[ELSEWHERE]` |
 | 13 | CAN as the inter-board transport | `[FIRMWARE]` + `[ELSEWHERE]` |
-| 14 | Recoat sequence | `[FIRMWARE]` |
+| 14 | Recoat sequence | `[DONE]` + `[OPEN]` tradeoff |
 | 15 | Field correction format and the silent bug | `[FACT]` + `[FIRMWARE]` |
 | 16 | The .cor files hold no distortion data | `[FACT]` + `[OPEN]` |
-| 17 | What the old handler revealed | `[FACT]` + `[FIRMWARE]` |
-| 18 | **Firmware work queue** | - |
+| 17 | What the old handler revealed | `[FACT]` + `[DONE]` |
+| 18 | **Firmware work queue** | Mega done; Teensy next |
 | 19 | Job file on SD, and the print log | `[FIRMWARE]` |
 
 **Lifecycle:** when something is implemented it leaves this file. The decision
@@ -497,7 +497,10 @@ controllers with a 3.3 V transceiver instead.
 Check the crystal on any MCP2515 module - they ship with 8 MHz or 16 MHz, and
 the bit-timing registers differ. Wrong value looks like a dead bus.
 
-## 14. Recoat sequence  `[FIRMWARE]`
+## 14. Recoat sequence  `[DONE]` `[OPEN]`
+
+Implemented in `src/arduino-mega/recoat.cpp`. The park-mode tradeoff below is
+still unmeasured, which is why it is a per-job parameter.
 
 Confirmed with the machine owner on 2026-08-26. Order matters and the struct
 alone does not convey it, so it belongs in `PROTOCOL.md`.
@@ -797,7 +800,7 @@ in the old repo - it may already fit a table from measured points, and would be
 better reused than reinvented.
 
 
-## 17. What the old PC handler and Mega firmware revealed  `[FACT]` `[FIRMWARE]`
+## 17. What the old PC handler and Mega firmware revealed  `[FACT]` `[DONE]`
 
 Read 2026-08-26: `Laser_controller_and_arduino/Arduino_HandlerV2.py` (the PC to
 Arduino command layer) and the command parser in `Arduino_Trimmed_Program.ino`.
@@ -907,7 +910,8 @@ numbers and acks make it structurally impossible.
 ## 18. Firmware work queue
 
 Protocol version 1 shipped in `a383eaa`; version 2 in `7e53d55` (rename) and
-`3abc782` (semantics). **The protocol is done. None of it is implemented.**
+`3abc782` (semantics). **The protocol is done.** The Mega is implemented; the
+Teensy and the ESP32 are not.
 
 ### Porting constraints - fix these while porting, not after
 
@@ -921,21 +925,44 @@ was built without them.
 | P3 | **Position authority lives on the Mega** | The PC held `build_cur` / `supply_cur` and sent absolute targets, so the machine could not run without it. The Mega must track position itself and publish `axis_status_t`. |
 | P4 | **SD reads in the main loop, never in the DMA refill ISR** | Filesystem access from interrupt context is a non-starter. The ISR consumes from a RAM ring; the main loop keeps it fed. |
 
-### Arduino Mega - the largest piece, still a skeleton
+P1, P2 and P3 are **done** - they are built into the Mega port. P4 is still
+ahead, on the Teensy.
 
-| Item | Notes | Section |
-|---|---|---|
-| Wire to the protocol | replaces the `CMD\|...` text protocol entirely | - |
-| Motion, restructured non-blocking | feed/bed/wipe, homing, limits (P1) | 17 |
-| Position tracking and `axis_status_t` | (P3) | 17 |
-| Recoat cycle with park modes | order matters; the Mega owns the whole cycle | 14 |
-| Anti-backlash approach direction | real mechanical compensation, not superstition | 17 |
-| Sensors: O2, thermistors, validity | carry the pin comments across verbatim | 17 |
-| Safety: observe the hardware interlock chain | inputs, not outputs - firmware must not be able to defeat it | 17 |
-| Chamber lighting, three modes | `MSG_LIGHT_SET` | 17 |
-| `MSG_SENSOR_OVERRIDE` reporting | compile-time override, loudly visible | 17 |
-| Airflow: blower PWM, argon solenoid | radiator fan defined but unwired | 17 |
-| Periodic wiper re-homing | can run during a mark once P1 is done | 17 |
+### Arduino Mega - done
+
+Ported and building. Everything that was queued here has landed: the protocol
+replaces the `CMD|...` text lines, motion is a non-blocking state machine,
+position authority is on the board, the recoat cycle runs both park modes with
+anti-backlash and periodic re-homing, and sensors, interlocks, lighting,
+override reporting and airflow are all live. The code is the record now; the
+detail that used to live here is in `src/arduino-mega/` and `PROTOCOL.md`.
+
+Three things about it are decisions rather than transcription, and are worth
+knowing before touching that board:
+
+- **Software travel limits apply only to a homed axis.** An un-homed axis has
+  no trustworthy zero, so only the switches protect it. This is what the old
+  firmware's always-on `BED_OVERRIDE`/`FEED_OVERRIDE`/`WIPE_OVERRIDE` were
+  really working around: with the pistons never homed, bounds against a
+  meaningless zero would have blocked every descent.
+- **A limit switch hit outside homing does not re-reference position.** It
+  freezes the axis and raises `FAULT_LIMIT_UNEXPECT`. Re-zeroing there would
+  let a glitching switch silently redefine zero.
+- **Live interlock trips are reported but not latched.** Only a real fault
+  needs `MSG_FAULT_CLEAR`; an open door clears itself when the door shuts,
+  otherwise a clear would be needed after every powder load.
+
+Still open on the Mega, and none of it blocks a print:
+
+- The fan tach on pin 20 is wired but not counted, so `fan_status_t.rpm` is 0.
+- `FAN_MODE_MAPPED` is refused. The map from scan speed lived here when the
+  Mega drove the marking; it no longer sees scan speed at all. Where that
+  mapping should live is an open question - see section 17.
+- Re-homing the wiper **during** a mark is still not possible: the Mega has no
+  way to know a mark is running. It is folded into the recoat cycle instead.
+  Worth revisiting once the Teensy sequencer is talking.
+- There is no "prepare the machine" message, so each axis is homed by its own
+  `MSG_AXIS_HOME`. Fine today, since only the wiper is homed.
 
 ### Teensy - ported and building, speaks no protocol yet
 
